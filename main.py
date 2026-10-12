@@ -25,6 +25,7 @@ from datetime import datetime
 import data_export_tool as DataExportTool
 import absorbanceTool as AbsorbanceTool
 import adjustmentTool as AdjustmentTool
+import detectorTool as DetectorTool
 import data_processor as DataProcessor
 class FTSApp:
 
@@ -36,6 +37,8 @@ class FTSApp:
 
         self.absorbanceToolWindow = None
         self.adjustmentToolWindow = None
+        self.detectorToolWindow = None
+        self.monitorModeActive = False
 
         # optional separate DAQ for the reference interferogram
         self.DAQRefDriver = None
@@ -123,6 +126,7 @@ class FTSApp:
         self.frameButtonsTop.rowconfigure(3, weight=1)
         self.frameButtonsTop.rowconfigure(4, weight=1)
         self.frameButtonsTop.rowconfigure(5, weight=1)
+        self.frameButtonsTop.rowconfigure(6, weight=1)
 
         self.buttonSingle = ctk.CTkButton(master=self.frameButtonsTop,
                                           text="Single\ncapture",
@@ -214,6 +218,15 @@ class FTSApp:
                                            command=self.onCmdUnusedButton)
         self.buttonArchive.grid(row=5, column=1, sticky="N", padx=5, pady=5)
         self.buttonArchive.configure(state="disabled")
+
+        self.detectorToolButton = ctk.CTkButton(master=self.frameButtonsTop,
+                                                text="Detector\ntool",
+                                                width=120,
+                                                height=75,
+                                                corner_radius=10,
+                                                command=self.onCmdOpenDetectorTool,
+                                                state="disabled")
+        self.detectorToolButton.grid(row=6, column=0, sticky="N", padx=5, pady=5)
 
         # create a frame to hold all the controls related to settings and configuration
         # ==============================================================================================================
@@ -940,6 +953,9 @@ class FTSApp:
         self._setTriggerControlsEnabled(mainType in ("MFLI", "ADP2230") and not self._hasExternalReference())
         self._setReferenceFreqVisible()
 
+        # the detector tool only makes sense for the AMIS8140 detector
+        self.detectorToolButton.configure(state="normal" if mainType == "AMIS8140" else "disabled")
+
     def _setReferenceFreqVisible(self):
         if self._hasExternalReference():
             self.referenceFreqLabel.grid(row=2, column=0, sticky="E", padx=5, pady=5)
@@ -955,6 +971,9 @@ class FTSApp:
             ready = ready and self.delayLineReady
         if self._hasExternalReference():
             ready = ready and self.referenceDaqReady
+        if self.monitorModeActive:
+            # the detector level tool owns the AMS board while monitoring
+            ready = False
         state = "normal" if ready else "disabled"
         self.buttonSingle.configure(state=state)
         self.multipleMeasStartButton.configure(state=state)
@@ -1325,6 +1344,34 @@ class FTSApp:
             return
         SM.saveSettingsToFile(self.appSettings)     # try to maintain settings coherence
         self.adjustmentToolWindow = AdjustmentTool.AdjustmentTool(self.root, self.ZaberDrv, self.DAQDriver)
+
+    def onCmdOpenDetectorTool(self):
+        if self.daqTypeCombo.get() != "AMIS8140":
+            messagebox.showwarning("Detector tool",
+                                   "The detector tool is available for the AMIS8140 DAQ type only.")
+            return
+
+        # bring an already open tool to the front instead of opening another one
+        if self.detectorToolWindow is not None:
+            try:
+                if self.detectorToolWindow.window.winfo_exists():
+                    self.detectorToolWindow.window.lift()
+                    return
+            except Exception:
+                pass
+
+        self.detectorToolWindow = DetectorTool.DetectorTool(
+            self.root,
+            grabDetectorDriver=lambda: self.DAQDriver,
+            setMonitoringActive=self.setDetectorMonitoringActive,
+            initialTemperatureSetting=self.appSettings.get("amsDetectorTemperature", "0"),
+            samplingRateStrings=[si.si_format(f, precision=2) + "Hz" for f in AMSSerialDriver.SamplingRates])
+
+    def setDetectorMonitoringActive(self, active):
+        # called by the detector tool when level monitoring starts/stops;
+        # while active the AMS board is busy and captures are locked out
+        self.monitorModeActive = bool(active)
+        self._updateCaptureButtons()
 
     def onCmdUpdateSpectrumPlotRanges(self, other):
         self.appSettings["plotSpectrumXRangeMin"] = self.spectrumXMinBox.get()

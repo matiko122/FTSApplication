@@ -19,13 +19,15 @@ if not hasattr(serial.Serial, "set_buffer_size"):
 
 try:
     from ams_module import AMSSerialModule
-    from ams_messages import MessageOutputData, MessageStatus
+    from ams_messages import MessageOutputData, MessageStatus, MessageIds, MessageConfigDetectorTemperature
 
     AMS_LIBRARY_AVAILABLE = True
 except ImportError:
     AMSSerialModule = None
     MessageOutputData = None
     MessageStatus = None
+    MessageIds = None
+    MessageConfigDetectorTemperature = None
     AMS_LIBRARY_AVAILABLE = False
 
 
@@ -70,6 +72,7 @@ class AMSSerialDriver(DAQDriver):
         self.inputSamplesCount = 0
 
         self.measurementInProgress = False
+        self.monitoringModeActive = False
         self.detectorTemperatureK = None
         self.detectorTemperatureOk = None
         self.temperatureOkStreak = 0
@@ -215,6 +218,110 @@ class AMSSerialDriver(DAQDriver):
             self.module = None
             self.isConnected = False
             logging.info("AMS driver: disconnected")
+
+    # ------------------------------------------------------------------
+    # detector level tool support (temperature setpoint + live monitoring)
+    # ------------------------------------------------------------------
+
+    def setDetectorTemperatureNow(self, temperatureInK):
+        """Applies a detector temperature setpoint immediately (no NVM write)."""
+        if self.module is None:
+            return False
+        try:
+            self.module.set_detector_temperature(int(temperatureInK))
+            logging.info(f"AMS driver: detector temperature set to {temperatureInK} K")
+            return True
+        except Exception as e:
+            logging.info(f"AMS driver: setting detector temperature failed: {e}")
+            return False
+
+    def readDetectorTemperatureSetpoint(self, timeout=2.0):
+        """Reads the detector temperature setpoint currently stored on the
+        board [K] (0 = controller disabled). Returns None if not readable."""
+        if self.module is None or MessageIds is None:
+            return None
+
+        try:
+            self.module.flush_input()
+            self.module.read_config(MessageIds.MESSAGE_CONFIGURE_DETECTOR_TEMPERATURE)
+        except Exception as e:
+            logging.info(f"AMS driver: setpoint read failed: {e}")
+            return None
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            msg = self.module.read_one_message(timeout=0.2)
+            if msg is None:
+                continue
+            if isinstance(msg, MessageConfigDetectorTemperature):
+                return int(msg.temperature)
+
+        return None
+
+    def beginLevelMonitoring(self, samplingFreqIndex=0):
+        """Starts a continuous freerunning capture for the detector level tool.
+        Returns None on success or an error string."""
+        if self.module is None:
+            return "AMS-DIG-PROC not connected"
+
+        index = int(samplingFreqIndex)
+        if not 0 <= index < len(self.SamplingRates):
+            index = 0
+
+        effectiveRate = self.SamplingRates[index]
+        ratio = int(round(self.PhysicalSampleRate / effectiveRate))
+
+        try:
+            self.module.workmode_stop()
+            self.module.processing_disable()
+            self.module.processing_oversampling(0, ratio, self.ProcessingBufferSamples)
+            self.module.set_samplerate(int(self.PhysicalSampleRate))
+            self.module.flush_input()
+            self.module.workmode_freerunning(0)     # continuous until stopped
+        except Exception as e:
+            self.monitoringModeActive = False
+            self.measurementInProgress = False
+            return f"monitoring start failed: {e}"
+
+        self.monitoringModeActive = True
+        # re-use the measurement flag so the GUI status poll keeps its hands
+        # off the serial port while monitoring
+        self.measurementInProgress = True
+        self.currentMeasurementFrequency = effectiveRate
+
+        logging.info(f"AMS driver: level monitoring started at {effectiveRate} Hz")
+        return None
+
+    def readLevelBlock(self, timeout=0.5):
+        """Reads the next data buffer for level monitoring and returns its
+        statistics: level (mean), pk_pk, std and sample count. None on timeout."""
+        if self.module is None or not self.monitoringModeActive:
+            return None
+
+        msg = self.module.read_one_message(msgClasses=MessageOutputData, timeout=timeout)
+        if msg is None:
+            return None
+
+        data = np.asarray(msg.voltages, dtype=np.float64)
+        if data.size == 0:
+            return None
+
+        return {
+            "level": float(np.mean(data)),
+            "pk_pk": float(np.max(data) - np.min(data)),
+            "std": float(np.std(data)),
+            "samples": int(data.size),
+        }
+
+    def endLevelMonitoring(self):
+        self.monitoringModeActive = False
+        self.measurementInProgress = False
+        if self.module is not None:
+            try:
+                self.module.workmode_stop()
+            except Exception:
+                pass
+        logging.info("AMS driver: level monitoring stopped")
 
     # ------------------------------------------------------------------
     # DAQDriver interface
