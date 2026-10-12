@@ -29,6 +29,7 @@ Add a new DAQ type to the FTS app: **AMIS8140-01** (VIGO Photonics InAsSb LWIR d
    - `background_controller.py` — dual-DAQ support: second (`DAQRefDriver`) driver, parallel capture (helper thread), time-base alignment (unit-tested: correlation 1.000000, error exactly at the theoretical interpolation bound), failure propagation.
    - `main.py` — new DAQ type `AMIS8140`, `Reference source` selection (Internal/MFLI/ADP2230), scrollable Conn tab, AMS port/temperature controls, reference status label, per-DAQ sampling-rate combos, trigger tab disabled for AMS/dual mode, live detector temperature display (2 s poll), safer MFLI ID parsing (missing `;` no longer crashes).
    - `settings_manager.py` — new defaults (`referenceDaqType`, `referenceSelectedFrequencyIndex`, `amsPort`, `amsBaudrate`, `amsDetectorTemperature`, `amsWaitForTemperature`, `amsSelectedFrequencyIndex`).
+   - `detectorTool.py` — **detector level tool** window (button "Detector\ntool" in the top button column, enabled only when AMIS8140 is selected): set/read the detector temperature setpoint, live output level monitoring (mean/pk-pk/noise readouts + level-over-time plot) at a selectable effective rate; the main capture buttons are locked while monitoring; end-to-end tested against hardware.
    - `daq_base.py` — capability flags `ProvidesReferenceChannel`, `SupportsTriggerMode`.
    - App smoke test: GUI launches and runs with the new code.
 
