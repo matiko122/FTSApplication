@@ -1,7 +1,8 @@
 # AMS-DIG-PROC / AMIS8140-01 integration — progress handoff
 
 **Date:** 2026-10-12 · **Repo:** `jmnich/FTSApplication`, branch `main`
-**Status:** planning + hardware bench validation **COMPLETE**; the app driver (`ams_driver.py`) is **not yet implemented**.
+**Status:** **implemented** — AMS driver, dual-DAQ controller, GUI integration are in place.
+**Tested:** driver against physical hardware (exact sample counts), controller logic with synthetic data unit tests, app GUI smoke test. **Not yet tested:** full end-to-end measurement with Zaber + reference DAQ (equipment available 2026-10-13).
 **Purpose of this document:** allow another agent/developer to continue on a different computer without re-deriving anything.
 
 ---
@@ -23,6 +24,13 @@ Add a new DAQ type to the FTS app: **AMIS8140-01** (VIGO Photonics InAsSb LWIR d
 3. `ams-dig-proc>=0.0.9` added to `requirements.txt`.
 4. `tools/ams_bench.py` written and **validated against real hardware**. It is the reference for all protocol facts below.
 5. Hardware bench session (2026-10-12): connection, telemetry, temperature, data streaming all confirmed. Zaber + reference interface were not available; sensor is physically blinded (flat signal is expected).
+6. **Application integration implemented and partially tested (same day):**
+   - `ams_driver.py` — full `DAQDriver` implementation; verified on hardware: connect, 2 s capture at 13 671.875 Hz returned exactly 28 672 samples in 2.41 s, reference is `None`, trigger path returns a clear error.
+   - `background_controller.py` — dual-DAQ support: second (`DAQRefDriver`) driver, parallel capture (helper thread), time-base alignment (unit-tested: correlation 1.000000, error exactly at the theoretical interpolation bound), failure propagation.
+   - `main.py` — new DAQ type `AMIS8140`, `Reference source` selection (Internal/MFLI/ADP2230), scrollable Conn tab, AMS port/temperature controls, reference status label, per-DAQ sampling-rate combos, trigger tab disabled for AMS/dual mode, live detector temperature display (2 s poll), safer MFLI ID parsing (missing `;` no longer crashes).
+   - `settings_manager.py` — new defaults (`referenceDaqType`, `referenceSelectedFrequencyIndex`, `amsPort`, `amsBaudrate`, `amsDetectorTemperature`, `amsWaitForTemperature`, `amsSelectedFrequencyIndex`).
+   - `daq_base.py` — capability flags `ProvidesReferenceChannel`, `SupportsTriggerMode`.
+   - App smoke test: GUI launches and runs with the new code.
 
 ## 3. Hardware / environment facts
 
@@ -101,7 +109,7 @@ overlap  = (t_ref >= t_det[0]) & (t_ref <= t_det[-1])   # crops start jitter + t
 y_aligned = np.interp(t_ref[overlap], t_det, y_det)
 ref_crop  = ref[overlap]
 ```
-Justification: constant start offset only shifts x-origin (phase — magnitude spectra unaffected); ppm-level clock drift over a 5 s scan is negligible; margins cover the rest. **Flag this to the user before implementing** — they asked not to change processing and may prefer this handled differently.
+Justification: constant start offset only shifts x-origin (phase — magnitude spectra unaffected); ppm-level clock drift over a 5 s scan is negligible; margins cover the rest. **Implemented** as `BackgroundController.alignInterferogramsToReferenceTimeBase` (unit-tested against synthetic signals on the two real rate tables). Still worth an explicit confirmation with the user during the first live dual-DAQ test; the algorithm lives in one place, so changing it is cheap.
 
 ### 5.3 GUI / settings changes (planned)
 
@@ -139,14 +147,19 @@ class AMSSerialDriver(DAQDriver):
     # disconnect(): workmode_stop; reader_thread.stop(); reader_thread.ser.close()
 ```
 
-## 6. Files changed so far
+## 6. Files changed
 
 | File | State |
 |---|---|
-| `requirements.txt` | **modified (uncommitted)**: `ams-dig-proc>=0.0.9` added below `zhinst` |
-| `tools/ams_bench.py` | **new**: bench validation script (see §7) |
+| `ams_driver.py` | **new**: `AMSSerialDriver` — full `DAQDriver` implementation (posix shim, +1 block, gap/overflow checks, temperature) |
+| `background_controller.py` | **modified**: dual-DAQ (`DAQRefDriver`, `SetReferenceDAQReadyFlagMethod`), parallel capture, time-base alignment, `postConnectSetup` hook |
+| `main.py` | **modified**: `AMIS8140` DAQ type, Reference source selection, scrollable Conn tab, AMS controls, ref status, per-DAQ rate combos, trigger gating, live temperature poll, MFLI ID parse hardening |
+| `daq_base.py` | **modified**: `ProvidesReferenceChannel`, `SupportsTriggerMode` flags |
+| `settings_manager.py` | **modified**: reference + AMS defaults |
+| `tools/ams_bench.py` | **new**: bench validation script (§7) |
+| `requirements.txt` | **modified**: `ams-dig-proc>=0.0.9` |
 | `AMS_INTEGRATION.md` | **new**: this document |
-| `app_settings.txt` | modified by local test runs (runtime state — intentionally not committed) |
+| `app_settings.txt` | runtime state, intentionally not committed |
 
 `tools/ams_bench.py` already contains: autodetect port, access check, POSIX shim, status/temperature/simulation tests, freerun rate tests with the +1-block compensation, counter-gap & overflow reporting, `--reset-board`, `--outdir` CSV dumps.
 
@@ -166,16 +179,24 @@ python tools/ams_bench.py --duration 3 --outdir /tmp/ams_bench
 
 Expected health: status message within 2 s; `T≈250.6 K ok=True`; ratio 512/1024 complete (`recv==exp`, `gaps=0`); ratio 256 may show gaps (expected, do not use).
 
-## 8. Next steps (ordered)
+## 8. Tomorrow's test procedure (Zaber + reference available)
 
-1. **Confirm with the user:** (a) time-base alignment approach (§5.2), (b) detector operating temperature for the settings default, (c) DAQ type display name (`AMIS8140`).
-2. Implement `ams_driver.py` (§5.4) + `ProvidesReferenceChannel` flag in `daq_base.py`.
-3. `background_controller.py`: second driver, parallel capture, alignment helper, temperature hook.
-4. `main.py`: combos, status labels, AMS controls, per-DAQ rate combos, lazy import.
-5. `settings_manager.py`: new defaults.
-6. Bench end-to-end with Zaber + reference (Zaber not yet available during first bench; sensor was blinded).
-   - Cross-validate spectra: same scan captured with MFLI-only vs AMS-detector + MFLI-reference.
-7. Optional later: adjustment-tool support, unit tests with a fake serial replaying CRC-valid frames, commit/push.
+1. Pull this repo, set up the venv (`python3.14 -m venv .venv`, `pip install -r requirements.txt`), connect Zaber + reference DAQ + AMS board.
+2. Start the app; in the **Conn** tab:
+   - `DAQ type` = **AMIS8140** (AMS port should already autodetect, e.g. `/dev/ttyUSB0`)
+   - `Reference source` = **MFLI** (or ADP2230); enter the MFLI `devID;IP`
+   - `Detector temp. [K]` = e.g. `250` if you want the app to set the setpoint (0 = don't touch)
+   - click **Connect all** — status should show `READY` for General / DAQ system / Reference DAQ / Delay line
+3. **Inspect ref. signal** button without capturing to verify the MFLI reference channel (checks DAQ plumbing).
+4. Single capture with a short scan; verify:
+   - interferogram/spectrum plots appear; no "alignment failed" messages
+   - the x-axis scale is correct (compare with an MFLI-only capture of the same scan; same spectral features/scale, small phase differences are expected)
+5. Then multiple captures with averaging, then Save results / Save .h5 (raw export gets the aligned ref+detector pair, unchanged format).
+6. If the reference is a different device than planned earlier (`referenceSelectedFrequencyIndex` default 12 → 14 600 Hz), adjust in `Reference sampling freq.`.
+
+Remaining/optional work after testing:
+- Confirm the alignment approach with the user; consider cropping the Zaber ramp (crop setting) if the LWIR band edge shows artifacts.
+- Optional: adjustment-tool support for AMS; fake-serial unit tests; docs/README updates.
 
 ## 9. Related app issues found during the earlier full analysis (out of scope, for awareness)
 
@@ -188,6 +209,8 @@ Expected health: status message within 2 s; `T≈250.6 K ok=True`; ratio 512/102
 
 ## 10. Open questions
 
-- Does the user want detector temperature written to NVM (`save_config`) or runtime-only? (current recommendation: runtime-only)
-- Should higher effective rates (ratio ≤ 256) be exposed as "experimental" for short bursts? (bench says not reliable)
+- Time-base alignment: implemented (§5.2); confirm during the first dual-DAQ measurement.
+- Detector temperature: the app sets the setpoint only when the field is non-zero (runtime only, no NVM write) — confirm the desired operating value (the bench unit stabilizes at 250.61 K).
+- Should higher effective rates (ratio ≤ 256) be exposed as "experimental" for short bursts? Bench says not reliable at 1 Mbit/s.
 - UART baud raise via `MessageConfigInterfaces.uartBaud` is possible but untested — only if higher rates are needed later.
+- Trigger mode: unavailable for AMS (single channel, external trigger only); dual-DAQ mode also disables the existing MFLI trigger path. Revisit if a shared trigger source is added.

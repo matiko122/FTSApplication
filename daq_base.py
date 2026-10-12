@@ -2,9 +2,16 @@ import logging
 
 
 class DAQDriver:
-    """Base class for all DAQ drivers (MFLI, Digilent ADP2230, Simulated)."""
+    """Base class for all DAQ drivers (MFLI, Digilent ADP2230, AMS-DIG-PROC, Simulated)."""
 
     SamplingRates = ()
+
+    # capability flags used by the application layer:
+    #   ProvidesReferenceChannel - driver can also deliver the laser reference
+    #     interferogram (False for single-channel DAQs like the AMS-DIG-PROC)
+    #   SupportsTriggerMode - driver supports hardware/level triggered capture
+    ProvidesReferenceChannel = True
+    SupportsTriggerMode = True
 
     def __init__(self):
         self.isConnected = False

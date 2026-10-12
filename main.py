@@ -10,6 +10,7 @@ import sys
 from mfli_driver import MFLIDriver
 from digilent_driver import DigilentDriver
 from simulated_daq import SimulatedDAQ
+from ams_driver import AMSSerialDriver, AMS_LIBRARY_AVAILABLE
 from zaber_driver import ZaberDriver
 import time
 import si_prefix as si
@@ -19,6 +20,7 @@ import settings_manager as SM
 import logging
 from tkinter.filedialog import asksaveasfilename
 from tkinter import filedialog
+from tkinter import messagebox
 from datetime import datetime
 import data_export_tool as DataExportTool
 import absorbanceTool as AbsorbanceTool
@@ -34,6 +36,14 @@ class FTSApp:
 
         self.absorbanceToolWindow = None
         self.adjustmentToolWindow = None
+
+        # optional separate DAQ for the reference interferogram
+        self.DAQRefDriver = None
+        self.referenceDaqReady = False
+        self.mainSamplingRates = list(MFLIDriver.MFLISamplingRates)
+        self.mainSamplingRateStrings = []
+        self.referenceSamplingRates = list(MFLIDriver.MFLISamplingRates)
+        self.referenceSamplingRateStrings = []
 
         if SM.isSettingsFileAvailable():
             self.appSettings = SM.readSettingsFromFile()
@@ -415,107 +425,149 @@ class FTSApp:
         # configure settings 'HARDWARE' tab
         # ==============================================================================================================
         self.settingsTabs.tab("Conn").columnconfigure(0, weight=1)
-        self.settingsTabs.tab("Conn").columnconfigure(1, weight=1)
+        self.settingsTabs.tab("Conn").rowconfigure(0, weight=1)
 
-        self.daqTypeLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        # the connection tab is scrollable because it may hold the controls of
+        # two DAQ systems at once (detector + optional reference DAQ)
+        self.connFrame = ctk.CTkScrollableFrame(master=self.settingsTabs.tab("Conn"),
+                                                fg_color="transparent")
+        self.connFrame.grid(row=0, column=0, sticky="NSEW")
+        self.connFrame.columnconfigure(0, weight=1)
+        self.connFrame.columnconfigure(1, weight=1)
+
+        self.daqTypeLabel = ctk.CTkLabel(master=self.connFrame,
                                          text="DAQ type",
                                          font=ctk.CTkFont(size=12))
         self.daqTypeLabel.grid(row=0, column=0, sticky="E", padx=5, pady=5)
 
-        self.daqTypeCombo = ctk.CTkComboBox(master=self.settingsTabs.tab("Conn"),
-                                             values=["MFLI", "ADP2230", "Simulated"],
+        self.daqTypeCombo = ctk.CTkComboBox(master=self.connFrame,
+                                             values=["MFLI", "ADP2230", "AMIS8140", "Simulated"],
                                              state="readonly",
                                              width=140,
                                              command=self.onCmdDAQTypeChanged)
         self.daqTypeCombo.grid(row=0, column=1, sticky="W", padx=5, pady=5)
         self.daqTypeCombo.set(self.appSettings.get("daqType", "MFLI"))
 
-        self.hardwareStatusLabelHeader = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        self.referenceSourceLabel = ctk.CTkLabel(master=self.connFrame,
+                                                 text="Reference\nsource",
+                                                 font=ctk.CTkFont(size=12))
+        self.referenceSourceLabel.grid(row=1, column=0, sticky="E", padx=5, pady=5)
+
+        self.referenceSourceCombo = ctk.CTkComboBox(master=self.connFrame,
+                                                    values=["Internal"],
+                                                    state="readonly",
+                                                    width=140,
+                                                    command=self.onCmdReferenceSourceChanged)
+        self.referenceSourceCombo.grid(row=1, column=1, sticky="W", padx=5, pady=5)
+        self.referenceSourceCombo.set(self.appSettings.get("referenceDaqType", "Internal"))
+
+        self.referenceFreqLabel = ctk.CTkLabel(master=self.connFrame,
+                                               text="Reference\nsampling freq.",
+                                               font=ctk.CTkFont(size=12))
+
+        self.referenceFreqCombo = ctk.CTkComboBox(master=self.connFrame,
+                                                  values=[],
+                                                  state="readonly",
+                                                  width=140)
+
+        self.hardwareStatusLabelHeader = ctk.CTkLabel(master=self.connFrame,
                                                       text="General\nstatus",
                                                       font=ctk.CTkFont(size=12))
-        self.hardwareStatusLabelHeader.grid(row=1, column=0, sticky="E", padx=5, pady=5)
+        self.hardwareStatusLabelHeader.grid(row=3, column=0, sticky="E", padx=5, pady=5)
 
-        self.hardwareStatusLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        self.hardwareStatusLabel = ctk.CTkLabel(master=self.connFrame,
                                                 text="NOT\nREADY",
                                                 text_color="red",
                                                 font=ctk.CTkFont(size=14, weight="bold"))
-        self.hardwareStatusLabel.grid(row=1, column=1, sticky="W", padx=5, pady=5)
+        self.hardwareStatusLabel.grid(row=3, column=1, sticky="W", padx=5, pady=5)
 
-        self.mfliStatusLabelHeader = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        self.mfliStatusLabelHeader = ctk.CTkLabel(master=self.connFrame,
                                                   text="DAQ\nsystem",
                                                   font=ctk.CTkFont(size=12))
-        self.mfliStatusLabelHeader.grid(row=2, column=0, sticky="E", padx=5, pady=5)
+        self.mfliStatusLabelHeader.grid(row=4, column=0, sticky="E", padx=5, pady=5)
 
-        self.mfliStatusLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        self.mfliStatusLabel = ctk.CTkLabel(master=self.connFrame,
                                             text="NOT\nREADY",
                                             text_color="red",
                                             font=ctk.CTkFont(size=14, weight="bold"))
-        self.mfliStatusLabel.grid(row=2, column=1, sticky="W", padx=5, pady=5)
+        self.mfliStatusLabel.grid(row=4, column=1, sticky="W", padx=5, pady=5)
 
-        self.zaberStatusLabelHeader = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        self.referenceStatusLabelHeader = ctk.CTkLabel(master=self.connFrame,
+                                                       text="Reference\nDAQ",
+                                                       font=ctk.CTkFont(size=12))
+        self.referenceStatusLabelHeader.grid(row=5, column=0, sticky="E", padx=5, pady=5)
+
+        self.referenceStatusLabel = ctk.CTkLabel(master=self.connFrame,
+                                                 text="N/A",
+                                                 text_color="gray",
+                                                 font=ctk.CTkFont(size=14, weight="bold"))
+        self.referenceStatusLabel.grid(row=5, column=1, sticky="W", padx=5, pady=5)
+
+        self.zaberStatusLabelHeader = ctk.CTkLabel(master=self.connFrame,
                                                    text="Delay\nline",
                                                    font=ctk.CTkFont(size=12))
-        self.zaberStatusLabelHeader.grid(row=3, column=0, sticky="E", padx=5, pady=5)
+        self.zaberStatusLabelHeader.grid(row=6, column=0, sticky="E", padx=5, pady=5)
 
-        self.zaberStatusLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        self.zaberStatusLabel = ctk.CTkLabel(master=self.connFrame,
                                              text="NOT\nREADY",
                                              text_color="red",
                                              font=ctk.CTkFont(size=14, weight="bold"))
-        self.zaberStatusLabel.grid(row=3, column=1, sticky="W", padx=5, pady=5)
+        self.zaberStatusLabel.grid(row=6, column=1, sticky="W", padx=5, pady=5)
 
-        self.zaberCOMLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        self.zaberCOMLabel = ctk.CTkLabel(master=self.connFrame,
                                           text="Zaber port",
                                           font=ctk.CTkFont(size=12))
-        self.zaberCOMLabel.grid(row=4, column=0, sticky="W", padx=5, pady=5)
+        self.zaberCOMLabel.grid(row=7, column=0, sticky="W", padx=5, pady=5)
 
-        self.zaberPortCombo = ctk.CTkComboBox(master=self.settingsTabs.tab("Conn"),
+        self.zaberPortCombo = ctk.CTkComboBox(master=self.connFrame,
                                               values=[],
                                               state="readonly",
                                               width=140)
-        self.zaberPortCombo.grid(row=4, column=1, sticky="E", padx=5, pady=5)
+        self.zaberPortCombo.grid(row=7, column=1, sticky="E", padx=5, pady=5)
         self.onCmdRefreshCOMPorts()
 
         # set the last used Zaber COM port if it is currently available
         if self.currentlyAvailableCOMPorts.__contains__(self.appSettings["delayLineCOMPort"]):
             self.zaberPortCombo.set(self.appSettings["delayLineCOMPort"])
 
-        self.zaberPortRefreshButton = ctk.CTkButton(master=self.settingsTabs.tab("Conn"),
+        self.zaberPortRefreshButton = ctk.CTkButton(master=self.connFrame,
                                             text="",
                                             width=20,
                                             height=20,
                                             corner_radius=4,
                                             command=self.onCmdRefreshCOMPorts)
-        self.zaberPortRefreshButton.grid(row=4, column=0, sticky="E", padx=5, pady=5)
+        self.zaberPortRefreshButton.grid(row=7, column=0, sticky="E", padx=5, pady=5)
 
-        # DAQ-specific controls (row 5) — shown/hidden based on DAQ type
-        self.mfliIDLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        # DAQ-specific controls (main DAQ on the first line, optional
+        # reference DAQ on the second line) — shown/hidden per selection
+        self.mfliIDLabel = ctk.CTkLabel(master=self.connFrame,
                                         text="MFLI ID",
                                         font=ctk.CTkFont(size=12))
 
-        self.mfliIDBox = ctk.CTkTextbox(master=self.settingsTabs.tab("Conn"),
+        self.mfliIDBox = ctk.CTkTextbox(master=self.connFrame,
                                         width=140, height=30)
         self.mfliIDBox.configure(wrap='none')
         self.mfliIDBox.insert("0.0", self.appSettings["mfliDeviceID"])
 
-        self.digilentRangeLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        self.digilentRangeLabel = ctk.CTkLabel(master=self.connFrame,
                                                text="Range [V]",
                                                font=ctk.CTkFont(size=12))
 
-        self.digilentRangeCombo = ctk.CTkComboBox(master=self.settingsTabs.tab("Conn"),
+        self.digilentRangeCombo = ctk.CTkComboBox(master=self.connFrame,
                                                    values=["1", "2.5", "5", "10"],
                                                    state="readonly",
                                                    width=140)
         self.digilentRangeCombo.set(self.appSettings.get("digilentRange", "5"))
 
-        self.digilentInfoLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        self.digilentInfoLabel = ctk.CTkLabel(master=self.connFrame,
                                               text="Auto-detected via USB",
                                               font=ctk.CTkFont(size=11))
 
-        self.simulatedNoiseLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        self.simulatedNoiseLabel = ctk.CTkLabel(master=self.connFrame,
                                                 text="Noise level",
                                                 font=ctk.CTkFont(size=12))
 
-        self.simulatedNoiseSlider = ctk.CTkSlider(master=self.settingsTabs.tab("Conn"),
+        self.simulatedNoiseSlider = ctk.CTkSlider(master=self.connFrame,
                                                    width=140,
                                                    height=20,
                                                    from_=0,
@@ -523,28 +575,71 @@ class FTSApp:
                                                    number_of_steps=100,
                                                    command=self.onCmdSimulatedNoiseChanged)
 
-        self.simulatedNoiseValueLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Conn"),
+        self.simulatedNoiseValueLabel = ctk.CTkLabel(master=self.connFrame,
                                                       text="0.10",
                                                       font=ctk.CTkFont(size=12))
 
-        # show the correct controls for the current DAQ type
-        self._showDAQControls(self.daqTypeCombo.get())
+        # AMS-DIG-PROC specific controls
+        self.amsPortLabel = ctk.CTkLabel(master=self.connFrame,
+                                         text="AMS port",
+                                         font=ctk.CTkFont(size=12))
 
-        self.buttonHardware = ctk.CTkButton(master=self.settingsTabs.tab("Conn"),
+        self.amsPortCombo = ctk.CTkComboBox(master=self.connFrame,
+                                            values=[],
+                                            state="readonly",
+                                            width=140)
+
+        self.amsPortRefreshButton = ctk.CTkButton(master=self.connFrame,
+                                                  text="",
+                                                  width=20,
+                                                  height=20,
+                                                  corner_radius=4,
+                                                  command=self.onCmdRefreshAMSPorts)
+
+        self.amsTemperatureLabel = ctk.CTkLabel(master=self.connFrame,
+                                                text="Detector temp. [K]\n(0 = don't change)",
+                                                font=ctk.CTkFont(size=12))
+
+        self.amsTemperatureBox = ctk.CTkEntry(master=self.connFrame,
+                                              width=140, height=30)
+        self.amsTemperatureBox.insert(0, self.appSettings.get("amsDetectorTemperature", "0"))
+
+        self.amsWaitTemperatureSwitch = ctk.CTkSwitch(master=self.connFrame,
+                                                      text="Wait until stabilized",
+                                                      font=ctk.CTkFont(size=12),
+                                                      onvalue="True", offvalue="False")
+
+        if self.appSettings.get("amsWaitForTemperature", "False") == "True":
+            self.amsWaitTemperatureSwitch.select()
+        else:
+            self.amsWaitTemperatureSwitch.deselect()
+
+        self.amsTemperatureValueLabel = ctk.CTkLabel(master=self.connFrame,
+                                                     text="Detector: --",
+                                                     font=ctk.CTkFont(size=12))
+
+        # show the correct controls for the current DAQ selections
+        self._refreshReferenceSourceCombo()
+        self._refreshMainSamplingCombo()
+        self._refreshReferenceSamplingCombo()
+        self._showDAQControls()
+        self._updateDaqControlStates()
+
+        self.buttonHardware = ctk.CTkButton(master=self.connFrame,
                                             text="Connect\nall",
                                             width=120,
                                             height=80,
                                             corner_radius=10,
                                             command=self.onCmdConnectHardware)
-        self.buttonHardware.grid(row=6, column=0, sticky="N", padx=5, pady=5)
+        self.buttonHardware.grid(row=13, column=0, sticky="N", padx=5, pady=5)
 
-        self.buttonHardware = ctk.CTkButton(master=self.settingsTabs.tab("Conn"),
-                                            text="Home\nmirror",
-                                            width=120,
-                                            height=80,
-                                            corner_radius=10,
-                                            command=self.onCmdUnusedButton)
-        self.buttonHardware.grid(row=6, column=1, sticky="N", padx=5, pady=5)
+        self.buttonHomeMirror = ctk.CTkButton(master=self.connFrame,
+                                              text="Home\nmirror",
+                                              width=120,
+                                              height=80,
+                                              corner_radius=10,
+                                              command=self.onCmdUnusedButton)
+        self.buttonHomeMirror.grid(row=13, column=1, sticky="N", padx=5, pady=5)
 
         # configure settings 'EXPORT' tab
         # ==============================================================================================================
@@ -770,6 +865,7 @@ class FTSApp:
         self.ApplicationController.SetGeneralReadyFlagMethod = self.setGeneralReadyFlag
         self.ApplicationController.SetDAQReadyFlagMethod = self.setDAQReadyFlag
         self.ApplicationController.SetDelayLineReadyFlagMethod = self.setDelayLineReadyFlag
+        self.ApplicationController.SetReferenceDAQReadyFlagMethod = self.setReferenceDAQReadyFlag
         self.ApplicationController.SendResultsToPlot = self.receiveMeasurementResults
         self.ApplicationController.NotifyAllMeasurementsDone = self.receiveNotificationAllMeasurementsDone
 
@@ -781,6 +877,7 @@ class FTSApp:
         # run the app
         self.root.update()
         self.root.deiconify()   # show the window after it's loaded
+        self.root.after(2000, self._pollAMSStatus)
         self.root.mainloop()
 
     def updateStatusMessage(self, message):
@@ -811,25 +908,58 @@ class FTSApp:
                 if self.daqTypeCombo.get() == "MFLI":
                     self.appSettings["mfliDeviceID"] = self.mfliIDBox.get("0.0", "end").replace(' ', '').replace('\t', '').replace('\n', '').replace('\r', '')
                 logging.info(f"DAQ status: ready")
-                self._setScanTrgEnabled(self.daqTypeCombo.get() != "Simulated")
             else:
                 self.mfliStatusLabel.configure(text="NOT\nREADY", text_color="red")
                 logging.info(f"DAQ status: not ready")
-                self._setScanTrgEnabled(True)
+            self._updateDaqControlStates()
             self._updateCaptureButtons()
         self.root.after(0, _)
 
+    def setReferenceDAQReadyFlag(self, isReady):
+        def _():
+            self.referenceDaqReady = isReady
+            if self._hasExternalReference():
+                if isReady:
+                    self.referenceStatusLabel.configure(text="READY", text_color="lightgreen")
+                    logging.info(f"Reference DAQ status: ready")
+                else:
+                    self.referenceStatusLabel.configure(text="NOT\nREADY", text_color="red")
+                    logging.info(f"Reference DAQ status: not ready")
+            else:
+                self.referenceStatusLabel.configure(text="N/A", text_color="gray")
+            self._updateDaqControlStates()
+            self._updateCaptureButtons()
+        self.root.after(0, _)
+
+    def _hasExternalReference(self):
+        return self.referenceSourceCombo.get() != "Internal"
+
+    def _updateDaqControlStates(self):
+        mainType = self.daqTypeCombo.get()
+        self._setScanControlsEnabled(mainType != "Simulated")
+        self._setTriggerControlsEnabled(mainType in ("MFLI", "ADP2230") and not self._hasExternalReference())
+        self._setReferenceFreqVisible()
+
+    def _setReferenceFreqVisible(self):
+        if self._hasExternalReference():
+            self.referenceFreqLabel.grid(row=2, column=0, sticky="E", padx=5, pady=5)
+            self.referenceFreqCombo.grid(row=2, column=1, sticky="W", padx=5, pady=5)
+        else:
+            self.referenceFreqLabel.grid_forget()
+            self.referenceFreqCombo.grid_forget()
+
     def _updateCaptureButtons(self):
         isSimulated = self.daqTypeCombo.get() == "Simulated"
-        if isSimulated:
-            ready = self.daqReady
-        else:
-            ready = self.daqReady and self.delayLineReady
+        ready = self.daqReady
+        if not isSimulated:
+            ready = ready and self.delayLineReady
+        if self._hasExternalReference():
+            ready = ready and self.referenceDaqReady
         state = "normal" if ready else "disabled"
         self.buttonSingle.configure(state=state)
         self.multipleMeasStartButton.configure(state=state)
 
-    def _setScanTrgEnabled(self, enabled):
+    def _setScanControlsEnabled(self, enabled):
         state = "normal" if enabled else "disabled"
         for widget in [self.samplingFreqCombo, self.startingPosBox, self.scanLengthBox,
                        self.scanLengthSlider, self.scanSpeedSlider]:
@@ -837,6 +967,9 @@ class FTSApp:
                 widget.configure(state=state)
             except Exception:
                 pass
+
+    def _setTriggerControlsEnabled(self, enabled):
+        state = "normal" if enabled else "disabled"
         for widget in [self.triggerEnableSwitch, self.triggerLevelBox,
                        self.triggerHysteresisBox, self.triggerReferenceBox]:
             try:
@@ -943,12 +1076,37 @@ class FTSApp:
 
         logging.info(f"COM ports refresh. Found: {self.currentlyAvailableCOMPorts}")
 
+    def onCmdRefreshAMSPorts(self):
+        ports = serial.tools.list_ports.comports()
+
+        # prefer USB serial adapters, the AMS-DIG-USB appears as ttyUSB*/ACM*
+        usbPorts = []
+        allPorts = []
+        for port, desc, hwid in sorted(ports):
+            portName = "{}".format(port)
+            allPorts.append(portName)
+            if "usb" in portName.lower() or "acm" in portName.lower():
+                usbPorts.append(portName)
+
+        availablePorts = usbPorts if len(usbPorts) > 0 else allPorts
+        if len(availablePorts) == 0:
+            availablePorts = ["NONE"]
+
+        self.amsPortCombo.configure(values=availablePorts)
+
+        savedPort = self.appSettings.get("amsPort", "")
+        if savedPort in availablePorts:
+            self.amsPortCombo.set(savedPort)
+        else:
+            self.amsPortCombo.set(availablePorts[0])
+
+        logging.info(f"AMS ports refresh. Found: {availablePorts}")
+
     def onCmdSingleCapture(self):
         self._updateSimulatedNoiseLevel()
         self._updateDigilentRange()
 
-        self.appSettings["mfliSelectedFrequencyIndex"] = str(self.MFLIFreqneuenciesAsStrings.
-                                                             index(self.samplingFreqCombo.get()))
+        self._storeSamplingFrequencySettings()
 
         logging.info(f"Single capture started")
 
@@ -963,8 +1121,9 @@ class FTSApp:
             trgMode = False
 
         self.ApplicationController.performMeasurements(measurementsCount=1,
-                                                       samplingFrequency=self.MFLIFreqneuenciesAsStrings.
-                                                       index(self.samplingFreqCombo.get()),
+                                                       samplingFrequency=self._samplingIndexFromCombo(
+                                                           self.samplingFreqCombo, self.mainSamplingRateStrings),
+                                                       referenceSamplingFrequency=self._getReferenceSamplingFrequencyIndex(),
                                                        scanStart=int(self.appSettings["delayLineConfiguredScanStart"]),
                                                        scanLength=int(self.appSettings["delayLineConfiguredScanLength"]),
                                                        scanSpeed=float(self.appSettings["delayLineConfiguredScanSpeed"]),
@@ -986,8 +1145,7 @@ class FTSApp:
             self.updateStatusMessage("Incorrect data in the\nmeasurement count setting")
             return
 
-        self.appSettings["mfliSelectedFrequencyIndex"] = str(self.MFLIFreqneuenciesAsStrings.
-                                                             index(self.samplingFreqCombo.get()))
+        self._storeSamplingFrequencySettings()
 
         self.appSettings["apodizationWindow"] = self.apodizationTypeCombo.get()
         self.settingsUsedForCurrentMeasurement["apodizationWindow"] = self.apodizationTypeCombo.get()
@@ -1002,8 +1160,9 @@ class FTSApp:
 
         # actual mesurement order
         self.ApplicationController.performMeasurements(measurementsCount=measCount,
-                                                       samplingFrequency=self.MFLIFreqneuenciesAsStrings.
-                                                       index(self.samplingFreqCombo.get()),
+                                                       samplingFrequency=self._samplingIndexFromCombo(
+                                                           self.samplingFreqCombo, self.mainSamplingRateStrings),
+                                                       referenceSamplingFrequency=self._getReferenceSamplingFrequencyIndex(),
                                                        scanStart=int(self.appSettings["delayLineConfiguredScanStart"]),
                                                        scanLength=int(self.appSettings["delayLineConfiguredScanLength"]),
                                                        scanSpeed=float(self.appSettings["delayLineConfiguredScanSpeed"]),
@@ -1159,6 +1318,11 @@ class FTSApp:
         self.absorbanceToolWindow.setApplicationSettings = self.setApplicationSettings
 
     def onCmdOpenAdjustmentTool(self):
+        if self.daqTypeCombo.get() not in ("MFLI", "ADP2230"):
+            messagebox.showwarning("Adjustment tool",
+                                   "The adjustment tool requires the MFLI or ADP2230 DAQ type.\n"
+                                   "Select one as the main DAQ and connect.")
+            return
         SM.saveSettingsToFile(self.appSettings)     # try to maintain settings coherence
         self.adjustmentToolWindow = AdjustmentTool.AdjustmentTool(self.root, self.ZaberDrv, self.DAQDriver)
 
@@ -1182,84 +1346,282 @@ class FTSApp:
         # self.root.update()
         self.updatePlot()
 
+    def _parseMFLIIdentifier(self):
+        # the MFLI ID box holds "devXXXX;hostname-or-IP"; the host part is
+        # optional and defaults to the local data server
+        strippedMFLIID = self.mfliIDBox.get("0.0", "end").replace(' ', '').replace('\t', '').replace('\n', '').replace(
+            '\r', '')
+        self.appSettings["mfliDeviceID"] = strippedMFLIID
+
+        identifierParts = strippedMFLIID.split(';')
+        deviceID = identifierParts[0]
+        serverHost = identifierParts[1] if len(identifierParts) > 1 else "localhost"
+        return deviceID, serverHost
+
     def onCmdConnectHardware(self):
         daqType = self.daqTypeCombo.get()
         self.appSettings["daqType"] = daqType
 
-        # disconnect the previous DAQ driver if it exists
+        referenceSource = self.referenceSourceCombo.get()
+        if daqType == "Simulated":
+            referenceSource = "Internal"
+            self.referenceSourceCombo.set(referenceSource)
+        if daqType == "AMIS8140" and referenceSource == "Internal":
+            messagebox.showerror("AMS-DIG-PROC", "The AMS board provides the detector signal only.\n"
+                                                 "Select MFLI or ADP2230 as the reference source.")
+            return
+        self.appSettings["referenceDaqType"] = referenceSource
+
+        # disconnect the previous drivers if they exist
         if self.DAQDriver is not None and hasattr(self.DAQDriver, 'disconnect'):
             self.DAQDriver.disconnect()
+        if self.DAQRefDriver is not None and hasattr(self.DAQRefDriver, 'disconnect'):
+            self.DAQRefDriver.disconnect()
+        self.DAQRefDriver = None
 
         strippedZaberPort = self.zaberPortCombo.get().replace(' ', '').replace('\t', '').replace('\n', '').replace(
             '\r', '')
 
-        # create the DAQ driver lazily based on the selected type
-        if daqType == "MFLI":
-            strippedMFLIID = self.mfliIDBox.get("0.0", "end").replace(' ', '').replace('\t', '').replace('\n', '').replace(
-                '\r', '')
-            self.appSettings["mfliDeviceID"] = strippedMFLIID
+        try:
+            # create the detector DAQ driver based on the selected type
+            if daqType == "MFLI":
+                detectedDeviceID, detectedServerHost = self._parseMFLIIdentifier()
 
-            strippedMFLIID = strippedMFLIID.split(';')
-            strippedMFLIIP = strippedMFLIID[1]
-            strippedMFLIID = strippedMFLIID[0]
+                self.DAQDriver = MFLIDriver(detectedDeviceID)
+                self.ApplicationController.DAQDriver = self.DAQDriver
+                self.ApplicationController.setDAQDeviceName(detectedDeviceID)
+                self.ApplicationController.setDAQIP(detectedServerHost)
 
-            self.DAQDriver = MFLIDriver(strippedMFLIID)
-            self.ApplicationController.DAQDriver = self.DAQDriver
-            self.ApplicationController.setDAQDeviceName(strippedMFLIID)
-            self.ApplicationController.setDAQIP(strippedMFLIIP)
+                logging.info(f"Attempting to connect to hardware. Zaber port: {strippedZaberPort} and MFLI devID: {detectedDeviceID}")
 
-            logging.info(f"Attempting to connect to hardware. Zaber port: {strippedZaberPort} and MFLI devID: {strippedMFLIID}")
+            elif daqType == "ADP2230":
+                self.appSettings["digilentRange"] = self.digilentRangeCombo.get()
 
-        elif daqType == "ADP2230":
-            self.appSettings["digilentRange"] = self.digilentRangeCombo.get()
+                self.DAQDriver = DigilentDriver()
+                self.DAQDriver.setChannelRange(float(self.digilentRangeCombo.get()))
+                self.ApplicationController.DAQDriver = self.DAQDriver
+                self.ApplicationController.setDAQDeviceName("ADP2230")
+                self.ApplicationController.setDAQIP("")
 
-            self.DAQDriver = DigilentDriver()
-            self.DAQDriver.setChannelRange(float(self.digilentRangeCombo.get()))
-            self.ApplicationController.DAQDriver = self.DAQDriver
-            self.ApplicationController.setDAQDeviceName("ADP2230")
-            self.ApplicationController.setDAQIP("")
+                logging.info(f"Attempting to connect to hardware. Zaber port: {strippedZaberPort} and ADP2230")
 
-            logging.info(f"Attempting to connect to hardware. Zaber port: {strippedZaberPort} and ADP2230")
+            elif daqType == "AMIS8140":
+                if not AMS_LIBRARY_AVAILABLE:
+                    messagebox.showerror("AMS-DIG-PROC", "The ams-dig-proc library is not installed.\n"
+                                                         "Install the requirements and try again.")
+                    return
 
-        elif daqType == "Simulated":
-            self.appSettings["simulatedNoiseLevel"] = str(self.simulatedNoiseSlider.get())
+                amsPort = self.amsPortCombo.get().replace(' ', '').replace('\t', '').replace('\n', '').replace('\r', '')
+                if len(amsPort) == 0 or amsPort == "NONE":
+                    messagebox.showerror("AMS-DIG-PROC", "No serial port selected for the AMS board.")
+                    return
 
-            self.DAQDriver = SimulatedDAQ()
-            self.DAQDriver.setNoiseLevel(self.simulatedNoiseSlider.get())
-            self.ApplicationController.DAQDriver = self.DAQDriver
-            self.ApplicationController.setDAQDeviceName("Simulated")
-            self.ApplicationController.setDAQIP("")
+                self.appSettings["amsPort"] = amsPort
+                self.appSettings["amsDetectorTemperature"] = self.amsTemperatureBox.get()
+                self.appSettings["amsWaitForTemperature"] = self.amsWaitTemperatureSwitch.get()
 
-            logging.info(f"Attempting to connect to hardware. Zaber port: {strippedZaberPort} and Simulated DAQ")
+                try:
+                    configuredTemperature = float(self.amsTemperatureBox.get())
+                except Exception:
+                    configuredTemperature = 0.0
 
+                self.DAQDriver = AMSSerialDriver()
+                self.DAQDriver.setDetectorTemperature(configuredTemperature)
+                self.DAQDriver.setWaitForTemperature(self.amsWaitTemperatureSwitch.get() == "True")
+                self.ApplicationController.DAQDriver = self.DAQDriver
+                self.ApplicationController.setDAQDeviceName(amsPort)
+                self.ApplicationController.setDAQIP("")
+
+                logging.info(f"Attempting to connect to hardware. Zaber port: {strippedZaberPort} and AMS port: {amsPort}")
+
+            elif daqType == "Simulated":
+                self.appSettings["simulatedNoiseLevel"] = str(self.simulatedNoiseSlider.get())
+
+                self.DAQDriver = SimulatedDAQ()
+                self.DAQDriver.setNoiseLevel(self.simulatedNoiseSlider.get())
+                self.ApplicationController.DAQDriver = self.DAQDriver
+                self.ApplicationController.setDAQDeviceName("Simulated")
+                self.ApplicationController.setDAQIP("")
+
+                logging.info(f"Attempting to connect to hardware. Zaber port: {strippedZaberPort} and Simulated DAQ")
+
+            # optionally create a separate reference DAQ driver
+            if referenceSource == "MFLI":
+                detectedDeviceID, detectedServerHost = self._parseMFLIIdentifier()
+
+                self.DAQRefDriver = MFLIDriver(detectedDeviceID)
+                self.ApplicationController.setReferenceDAQDeviceName(detectedDeviceID)
+                self.ApplicationController.setReferenceDAQIP(detectedServerHost)
+
+                logging.info(f"Reference DAQ: MFLI devID: {detectedDeviceID}")
+
+            elif referenceSource == "ADP2230":
+                self.appSettings["digilentRange"] = self.digilentRangeCombo.get()
+
+                self.DAQRefDriver = DigilentDriver()
+                self.DAQRefDriver.setChannelRange(float(self.digilentRangeCombo.get()))
+                self.ApplicationController.setReferenceDAQDeviceName("ADP2230")
+                self.ApplicationController.setReferenceDAQIP("")
+
+                logging.info(f"Reference DAQ: ADP2230")
+
+        except Exception as e:
+            logging.info(f"Hardware connection setup failed: {e}")
+            messagebox.showerror("Hardware connection", f"Hardware connection setup failed:\n{e}")
+            return
+
+        self.ApplicationController.setReferenceDAQDriver(self.DAQRefDriver, referenceSource)
         self.ApplicationController.daqType = daqType
         self.ApplicationController.setZaberPort(strippedZaberPort)
         self.ApplicationController.performInitialization()
 
-    def _showDAQControls(self, daqType):
+    def _refreshReferenceSourceCombo(self):
+        mainType = self.daqTypeCombo.get()
+
+        # the reference cannot be captured by the same interface instance as
+        # the detector signal; "Internal" means one DAQ provides both channels
+        if mainType == "MFLI":
+            allowedValues = ["Internal", "ADP2230"]
+        elif mainType == "ADP2230":
+            allowedValues = ["Internal", "MFLI"]
+        elif mainType == "AMIS8140":
+            allowedValues = ["MFLI", "ADP2230"]
+        else:
+            allowedValues = ["Internal"]
+
+        self.referenceSourceCombo.configure(values=allowedValues)
+
+        currentValue = self.referenceSourceCombo.get()
+        if currentValue not in allowedValues:
+            currentValue = allowedValues[0]
+            self.referenceSourceCombo.set(currentValue)
+
+        self.appSettings["referenceDaqType"] = currentValue
+
+    def _refreshMainSamplingCombo(self):
+        mainType = self.daqTypeCombo.get()
+
+        if mainType == "AMIS8140":
+            rates = list(AMSSerialDriver.SamplingRates)
+            settingsKey = "amsSelectedFrequencyIndex"
+        else:
+            rates = list(MFLIDriver.MFLISamplingRates)
+            settingsKey = "mfliSelectedFrequencyIndex"
+
+        self.mainSamplingRates = rates
+        self.mainSamplingRateStrings = [si.si_format(f, precision=2) + "Hz" for f in rates]
+
+        self.samplingFreqCombo.configure(values=self.mainSamplingRateStrings)
+
+        index = int(self.appSettings.get(settingsKey, "0"))
+        if not 0 <= index < len(self.mainSamplingRateStrings):
+            index = 0
+        self.samplingFreqCombo.set(self.mainSamplingRateStrings[index])
+
+    def _refreshReferenceSamplingCombo(self):
+        # the supported reference DAQs (MFLI, ADP2230) share the same rate table
+        rates = list(MFLIDriver.MFLISamplingRates)
+        self.referenceSamplingRates = rates
+        self.referenceSamplingRateStrings = [si.si_format(f, precision=2) + "Hz" for f in rates]
+
+        self.referenceFreqCombo.configure(values=self.referenceSamplingRateStrings)
+
+        index = int(self.appSettings.get("referenceSelectedFrequencyIndex", "12"))
+        if not 0 <= index < len(self.referenceSamplingRateStrings):
+            index = 0
+        self.referenceFreqCombo.set(self.referenceSamplingRateStrings[index])
+
+        self._setReferenceFreqVisible()
+
+    @staticmethod
+    def _samplingIndexFromCombo(combo, rateStrings):
+        try:
+            return rateStrings.index(combo.get())
+        except ValueError:
+            return 0
+
+    def _storeSamplingFrequencySettings(self):
+        mainType = self.daqTypeCombo.get()
+        mainIndex = self._samplingIndexFromCombo(self.samplingFreqCombo, self.mainSamplingRateStrings)
+
+        if mainType == "AMIS8140":
+            self.appSettings["amsSelectedFrequencyIndex"] = str(mainIndex)
+        else:
+            self.appSettings["mfliSelectedFrequencyIndex"] = str(mainIndex)
+
+        if self._hasExternalReference():
+            referenceIndex = self._samplingIndexFromCombo(self.referenceFreqCombo, self.referenceSamplingRateStrings)
+            self.appSettings["referenceSelectedFrequencyIndex"] = str(referenceIndex)
+
+    def _getReferenceSamplingFrequencyIndex(self):
+        if self._hasExternalReference():
+            return self._samplingIndexFromCombo(self.referenceFreqCombo, self.referenceSamplingRateStrings)
+        return None
+
+    def _showDAQControls(self):
+        mainType = self.daqTypeCombo.get()
+        referenceType = self.referenceSourceCombo.get()
+
         # hide all DAQ-specific controls first
         for widget in [self.mfliIDLabel, self.mfliIDBox,
                        self.digilentRangeLabel, self.digilentRangeCombo, self.digilentInfoLabel,
-                       self.simulatedNoiseLabel, self.simulatedNoiseSlider]:
+                       self.simulatedNoiseLabel, self.simulatedNoiseSlider,
+                       self.amsPortLabel, self.amsPortCombo, self.amsPortRefreshButton,
+                       self.amsTemperatureLabel, self.amsTemperatureBox,
+                       self.amsWaitTemperatureSwitch, self.amsTemperatureValueLabel]:
             widget.grid_forget()
 
-        if daqType == "MFLI":
-            self.mfliIDLabel.grid(row=5, column=0, sticky="W", padx=5, pady=5)
-            self.mfliIDBox.grid(row=5, column=1, sticky="E", padx=5, pady=5)
+        # main DAQ specific controls (first line)
+        if mainType == "MFLI":
+            self.mfliIDLabel.grid(row=8, column=0, sticky="W", padx=5, pady=5)
+            self.mfliIDBox.grid(row=8, column=1, sticky="E", padx=5, pady=5)
 
-        elif daqType == "ADP2230":
-            self.digilentRangeLabel.grid(row=5, column=0, sticky="W", padx=5, pady=5)
-            self.digilentRangeCombo.grid(row=5, column=1, sticky="E", padx=5, pady=5)
+        elif mainType == "ADP2230":
+            self.digilentRangeLabel.grid(row=8, column=0, sticky="W", padx=5, pady=5)
+            self.digilentRangeCombo.grid(row=8, column=1, sticky="E", padx=5, pady=5)
 
-        elif daqType == "Simulated":
-            self.simulatedNoiseLabel.grid(row=5, column=0, sticky="W", padx=5, pady=5)
-            self.simulatedNoiseSlider.grid(row=5, column=1, sticky="EW", padx=5, pady=5)
+        elif mainType == "Simulated":
+            self.simulatedNoiseLabel.grid(row=8, column=0, sticky="W", padx=5, pady=5)
+            self.simulatedNoiseSlider.grid(row=8, column=1, sticky="EW", padx=5, pady=5)
             self.simulatedNoiseSlider.set(float(self.appSettings.get("simulatedNoiseLevel", "0.1")))
             self._updateNoiseLabel()
 
+        elif mainType == "AMIS8140":
+            self.onCmdRefreshAMSPorts()
+            self.amsPortLabel.grid(row=8, column=0, sticky="W", padx=5, pady=5)
+            self.amsPortCombo.grid(row=8, column=1, sticky="E", padx=5, pady=5)
+            self.amsPortRefreshButton.grid(row=8, column=2, sticky="W", padx=2, pady=5)
+
+            self.amsTemperatureLabel.grid(row=10, column=0, sticky="W", padx=5, pady=5)
+            self.amsTemperatureBox.grid(row=10, column=1, sticky="E", padx=5, pady=5)
+            self.amsWaitTemperatureSwitch.grid(row=11, column=0, columnspan=2, sticky="W", padx=5, pady=2)
+            self.amsTemperatureValueLabel.grid(row=12, column=0, columnspan=2, sticky="W", padx=5, pady=2)
+
+        # reference DAQ specific controls (second line) — only needed when the
+        # main DAQ does not already provide them
+        if referenceType == "MFLI" and mainType != "MFLI":
+            self.mfliIDLabel.grid(row=9, column=0, sticky="W", padx=5, pady=5)
+            self.mfliIDBox.grid(row=9, column=1, sticky="E", padx=5, pady=5)
+
+        elif referenceType == "ADP2230" and mainType != "ADP2230":
+            self.digilentRangeLabel.grid(row=9, column=0, sticky="W", padx=5, pady=5)
+            self.digilentRangeCombo.grid(row=9, column=1, sticky="E", padx=5, pady=5)
+
     def onCmdDAQTypeChanged(self, selectedType):
         self.appSettings["daqType"] = selectedType
-        self._showDAQControls(selectedType)
+        self._refreshReferenceSourceCombo()
+        self._refreshMainSamplingCombo()
+        self._refreshReferenceSamplingCombo()
+        self._showDAQControls()
+        self._updateDaqControlStates()
+        self._updateCaptureButtons()
+
+    def onCmdReferenceSourceChanged(self, selectedSource):
+        self.appSettings["referenceDaqType"] = selectedSource
+        self._refreshReferenceSamplingCombo()
+        self._showDAQControls()
+        self._updateDaqControlStates()
+        self._updateCaptureButtons()
 
     def onCmdSimulatedNoiseChanged(self, value):
         self.appSettings["simulatedNoiseLevel"] = str(value)
@@ -1275,6 +1637,25 @@ class FTSApp:
     def _updateDigilentRange(self):
         if self.DAQDriver is not None and isinstance(self.DAQDriver, DigilentDriver):
             self.DAQDriver.setChannelRange(float(self.digilentRangeCombo.get()))
+
+    def _pollAMSStatus(self):
+        # periodically refresh the AMS detector temperature display; this is
+        # skipped while a measurement is running so that no data messages are
+        # consumed by the status reader
+        try:
+            driver = self.DAQDriver
+            if (driver is not None and isinstance(driver, AMSSerialDriver) and
+                    driver.isConnected and not driver.measurementInProgress):
+                driver.refreshStatus()
+                if driver.detectorTemperatureK is not None:
+                    temperatureText = f"Detector: {driver.detectorTemperatureK:.2f} K"
+                    if driver.detectorTemperatureOk:
+                        temperatureText = temperatureText + " (stable)"
+                    self.amsTemperatureValueLabel.configure(text=temperatureText)
+        except Exception:
+            pass
+
+        self.root.after(2000, self._pollAMSStatus)
 
     def onCmdOpenSpectrumPlot(self):
         logging.info(f"External spectrum plot open")
@@ -1346,6 +1727,15 @@ class FTSApp:
     def onCmdReferencePlot(self):
         logging.info(f"Reference signal plot open")
 
+        if self._hasExternalReference():
+            referenceDriver = self.DAQRefDriver
+        else:
+            referenceDriver = self.DAQDriver
+
+        if referenceDriver is None or getattr(referenceDriver, "lastReferenceData", None) is None:
+            messagebox.showwarning("Reference signal", "No reference signal data available yet")
+            return
+
         mpl.rcParams.update(mpl.rcParamsDefault)
         plt.figure()
         plt.locator_params(nbins=15)
@@ -1354,8 +1744,9 @@ class FTSApp:
         plt.title("Raw data with reference signal", fontsize=20)
         plt.xlabel("Sample num", fontsize=20)
         plt.ylabel("Detector voltage [V]", fontsize=20)
-        plt.plot(self.DAQDriver.lastReferenceData, alpha=0.75)
-        plt.plot(self.DAQDriver.lastInterferogramData)
+        plt.plot(referenceDriver.lastReferenceData, alpha=0.75)
+        if self.DAQDriver is not None and getattr(self.DAQDriver, "lastInterferogramData", None) is not None:
+            plt.plot(self.DAQDriver.lastInterferogramData)
         plt.grid(alpha=0.3)
         plt.ion()
         plt.pause(1.0)
@@ -1399,6 +1790,8 @@ class FTSApp:
     def onClosing(self):
         if self.DAQDriver is not None and hasattr(self.DAQDriver, 'disconnect'):
             self.DAQDriver.disconnect()
+        if self.DAQRefDriver is not None and hasattr(self.DAQRefDriver, 'disconnect'):
+            self.DAQRefDriver.disconnect()
         SM.saveSettingsToFile(self.appSettings)
         # make sure the application closes properly when the main window is destroyed
         logging.info('========= Application closed =========\n\n\n')

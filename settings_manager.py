@@ -89,4 +89,16 @@ def getDefaultSettings():
     defaultSettings["simulatedNoiseLevel"] = "0.1"
     defaultSettings["digilentRange"] = "5"
 
+    # reference DAQ selection: "Internal" (same DAQ captures both channels)
+    # or "MFLI" / "ADP2230" (separate DAQ for the reference interferogram)
+    defaultSettings["referenceDaqType"] = "Internal"
+    defaultSettings["referenceSelectedFrequencyIndex"] = "12"
+
+    # AMIS8140-01 detector via AMS-DIG-PROC board settings
+    defaultSettings["amsPort"] = ""
+    defaultSettings["amsBaudrate"] = "1000000"
+    defaultSettings["amsDetectorTemperature"] = "0"
+    defaultSettings["amsWaitForTemperature"] = "False"
+    defaultSettings["amsSelectedFrequencyIndex"] = "0"
+
     return  defaultSettings
