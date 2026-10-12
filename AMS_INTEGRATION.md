@@ -79,6 +79,25 @@ ratio  rate[Sa/s]  size[B]   recv/exp   gaps  overflow   latency[s]
  1024     6835.94        4  22528/22528    0        0       0.407
 ```
 
+## 4.1 Known issue: reported detector temperature rotates between three values (2026-10-12)
+
+While the app is idle, `MessageStatus.detector_temperature` (1 message/s, all frames CRC-valid) jumps between three clusters:
+
+| cluster | values observed |
+|---|---|
+| ~250.6 K | 250.591 … 250.651 |
+| ~267.8 K | 267.748 … 267.812 |
+| ~300.0 K | 299.960 (constant) |
+
+This is physically implausible (no detector can swing 50 K per second); the values appear to round-robin and `temperature_ok` flips randomly regardless of the value. All other status fields (sampling_state, processing_state, data_overflow_counter, messages_received_counter) stay constant. The TEC setpoint read back via `MESSAGE_CONFIGURE_DETECTOR_TEMPERATURE` is **0** (the board's own temperature controller is disabled; the AMIS module's integrated controller may be doing the actual stabilization).
+
+Evidence from a 90 s raw status capture; firmware **v1.1.0**, UUID `34002c001351333130343532`.
+
+Impact / handling:
+- The app displays the raw reported value faithfully (it may flicker between the clusters).
+- "Wait until stable" was hardened to require **5 consecutive `temperature_ok` statuses** (`temperatureOkStreak` in `ams_driver.py`); the GUI shows "(stable)" only after a streak of 3.
+- Recommended: ask VIGO support whether `detector_temperature` is valid on firmware v1.1.0 for the AMIS8140-01; send them the firmware version, UUID and the cluster table above. Cross-check the actual detector temperature mechanically if possible.
+
 ## 5. Agreed integration design
 
 ### 5.1 Architecture — dual DAQ

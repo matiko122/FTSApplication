@@ -72,6 +72,7 @@ class AMSSerialDriver(DAQDriver):
         self.measurementInProgress = False
         self.detectorTemperatureK = None
         self.detectorTemperatureOk = None
+        self.temperatureOkStreak = 0
         self.dataOverflowCounter = 0
         self.messagesReceivedCounter = 0
 
@@ -149,6 +150,10 @@ class AMSSerialDriver(DAQDriver):
         deadline = time.monotonic() + self.temperatureWaitTimeout
         self.module.flush_input()
 
+        # a single temperature_ok flag is not trustworthy (it can flip while the
+        # reported value is still moving), require a run of consecutive flags
+        consecutiveOkRequired = 5
+
         while time.monotonic() < deadline:
             msg = self.module.read_one_message(msgClasses=MessageStatus, timeout=0.5)
             if msg is None:
@@ -159,7 +164,7 @@ class AMSSerialDriver(DAQDriver):
             if statusCallback is not None and self.detectorTemperatureK is not None:
                 statusCallback(f"Detector temperature: {self.detectorTemperatureK:.2f} K")
 
-            if self.detectorTemperatureOk:
+            if self.temperatureOkStreak >= consecutiveOkRequired:
                 logging.info("AMS driver: detector temperature stabilized")
                 return True
 
@@ -186,6 +191,15 @@ class AMSSerialDriver(DAQDriver):
     def _updateCachedStatus(self, statusMessage):
         self.detectorTemperatureK = statusMessage.detector_temperature / 1000.0
         self.detectorTemperatureOk = bool(statusMessage.temperature_ok)
+
+        # the temperature_ok flag can note the temperature as settled while the
+        # reported value is still moving; require a run of consecutive "ok"
+        # status messages before treating the detector as stable
+        if self.detectorTemperatureOk:
+            self.temperatureOkStreak += 1
+        else:
+            self.temperatureOkStreak = 0
+
         self.dataOverflowCounter = int(statusMessage.data_overflow_counter)
         self.messagesReceivedCounter = int(statusMessage.messages_received_counter)
 

@@ -1649,7 +1649,7 @@ class FTSApp:
                 driver.refreshStatus()
                 if driver.detectorTemperatureK is not None:
                     temperatureText = f"Detector: {driver.detectorTemperatureK:.2f} K"
-                    if driver.detectorTemperatureOk:
+                    if driver.temperatureOkStreak >= 3:
                         temperatureText = temperatureText + " (stable)"
                     self.amsTemperatureValueLabel.configure(text=temperatureText)
         except Exception:
