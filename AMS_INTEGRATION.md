@@ -29,7 +29,7 @@ Add a new DAQ type to the FTS app: **AMIS8140-01** (VIGO Photonics InAsSb LWIR d
    - `background_controller.py` — dual-DAQ support: second (`DAQRefDriver`) driver, parallel capture (helper thread), time-base alignment (unit-tested: correlation 1.000000, error exactly at the theoretical interpolation bound), failure propagation.
    - `main.py` — new DAQ type `AMIS8140`, `Reference source` selection (Internal/MFLI/ADP2230), scrollable Conn tab, AMS port/temperature controls, reference status label, per-DAQ sampling-rate combos, trigger tab disabled for AMS/dual mode, live detector temperature display (2 s poll), safer MFLI ID parsing (missing `;` no longer crashes).
    - `settings_manager.py` — new defaults (`referenceDaqType`, `referenceSelectedFrequencyIndex`, `amsPort`, `amsBaudrate`, `amsDetectorTemperature`, `amsWaitForTemperature`, `amsSelectedFrequencyIndex`).
-   - `detectorTool.py` — **detector level tool** window (button "Detector\ntool" in the top button column, enabled only when AMIS8140 is selected): set/read the detector temperature setpoint, live temperature + `temperature_ok` indicator (yes/no with consecutive-ok streak), live output level monitoring (mean/pk-pk/noise readouts + level-over-time plot) at a selectable effective rate; the main capture buttons are locked while monitoring; end-to-end tested against hardware.
+   - `detectorTool.py` — **detector level tool** window (button "Detector\ntool" in the top button column, enabled only when AMIS8140 is selected): set/read the detector temperature setpoint, live setpoint-tracked temperature (see §4.1) + raw status field + board `temperature_ok` flag (shown as unreliable), live output level monitoring (mean/pk-pk/noise readouts + level-over-time plot) at a selectable effective rate; the main capture buttons are locked while monitoring; end-to-end tested against hardware.
    - `daq_base.py` — capability flags `ProvidesReferenceChannel`, `SupportsTriggerMode`.
    - App smoke test: GUI launches and runs with the new code.
 
@@ -40,7 +40,7 @@ Add a new DAQ type to the FTS app: **AMIS8140-01** (VIGO Photonics InAsSb LWIR d
 | Board | AMS-DIG-PROC + AMS-DIG-USB adapter (FTDI 0403:6015), port `/dev/ttyUSB0` on the bench machine |
 | UART | 1 000 000 baud, 8N1, COBS framing + CRC32 (CRC is checked by the library) |
 | ADC | 16-bit @ 7 MS/s, output samples **32-bit (4 B)** after the processing pipeline |
-| Detector | AMIS8140-01, TEC-stabilized; bench unit holds **250.61 K**, `temp_ok=True` |
+| Detector | AMIS8140-01, TEC-stabilized; with setpoint 263 K it locks at **263.32 K ± 0.015 K** within ~35 s (the earlier "250.61 K" was one of the non-detector readings, see §4.1) |
 | Permissions | Arch/CachyOS: tty nodes are `root:uucp`; on the bench machine logind granted a per-user ACL. On another machine the user may need `sudo usermod -aG uucp $USER` + relogin (Debian/Ubuntu: group `dialout`) |
 | Library | `ams-dig-proc 0.0.9` (PyPI). Git `main` (0.1.0) adds only firmware/UUID/bootloader helpers — acquisition API is identical. Both verified importable on Python 3.14. |
 
@@ -68,7 +68,7 @@ Add a new DAQ type to the FTS app: **AMIS8140-01** (VIGO Photonics InAsSb LWIR d
    Proposed driver constant: `SamplingRates = (13671.875, 6835.9375, 3417.96875, 1708.984375, 854.4921875)` (descending, matching the app's MFLI-style list).
 6. **Integrity check:** at ratio 256, `data_overflow_counter` stayed 0 while buffers were lost — the **1-byte `MessageOutputData.counter` gap check is the reliable integrity signal**, not the overflow counter. Driver must fail a scan on counter gaps.
 7. **Start latency** (command → first data message): 0.17 s @ ratio 256, **0.25 s @ 512**, 0.41 s @ 1024. Comfortably inside the app's 0.5 s scan margins.
-8. **Temperature:** `set_detector_temperature(K)` is a runtime setting; setpoint apparently persisted across a board reboot on the bench unit (250.61 K before and after). `reset()` temporarily shows a bogus high reading (299.96 K) that settles back. Do not `save_config()` without the user's intent (writes NVM).
+8. **Temperature:** `set_detector_temperature(K)` is a runtime setting and is **lost every time the serial port is opened** (see §4.1); the NVM value on the bench unit is 0 (controller off). Do not `save_config()` without the user's intent (writes NVM).
 9. **Simulation workmode** smoke test: data messages arrive, but a test sine encoded as uint16 raw samples did not round-trip (came back flat full-scale). Not needed for the app; revisit only if useful.
 10. No CRC/frame errors observed (`incorrect=0` on all clean runs).
 
@@ -80,24 +80,29 @@ ratio  rate[Sa/s]  size[B]   recv/exp   gaps  overflow   latency[s]
  1024     6835.94        4  22528/22528    0        0       0.407
 ```
 
-## 4.1 Known issue: reported detector temperature rotates between three values (2026-10-12)
+## 4.1 Known issue: `detector_temperature` carries three different readings (2026-10-12)
 
-While the app is idle, `MessageStatus.detector_temperature` (1 message/s, all frames CRC-valid) jumps between three clusters:
+Firmware **v1.1.0**, UUID `34002c001351333130343532`. Measured with `tools/ams_temp_probe.py` (raw status frames, CSV); decoding verified against the vendor `protocol.h` (packed, 22 B, field at offset 17), all frames CRC-valid.
 
-| cluster | values observed |
-|---|---|
-| ~250.6 K | 250.591 … 250.651 |
-| ~267.8 K | 267.748 … 267.812 |
-| ~300.0 K | 299.960 (constant) |
+`MessageStatus.detector_temperature` (1 status/s) switches between three sources; each value is held for ~1–5 consecutive status frames (mostly 3), the order is not strictly periodic (`ACAC` interleaving occurs, i.e. likely several writers to one variable):
 
-This is physically implausible (no detector can swing 50 K per second); the values appear to round-robin and `temperature_ok` flips randomly regardless of the value. All other status fields (sampling_state, processing_state, data_overflow_counter, messages_received_counter) stay constant. The TEC setpoint read back via `MESSAGE_CONFIGURE_DETECTOR_TEMPERATURE` is **0** (the board's own temperature controller is disabled; the AMIS module's integrated controller may be doing the actual stabilization).
+| source | setpoint 0 (controller off) | setpoint 263 K (10 min run) |
+|---|---|---|
+| A | 250.61 … 250.63 K | 250.53 … 250.59 K, flat — does not follow the setpoint |
+| B | 267.59 … 267.69 K | 267.7 → 268.1 K, slowly rising — does not follow the setpoint |
+| C | 299.35 … 299.96 K (≈ ambient) | 272.7 → 263.2 K in ~5 s, then **263.32 K ± 0.015 K** — follows the setpoint |
 
-Evidence from a 90 s raw status capture; firmware **v1.1.0**, UUID `34002c001351333130343532`.
+Only source C is the controlled detector temperature. Within a source, readings step by 20–30 mK (measurement resolution).
 
-Impact / handling:
-- The app displays the raw reported value faithfully (it may flicker between the clusters).
-- "Wait until stable" was hardened to require **5 consecutive `temperature_ok` statuses** (`temperatureOkStreak` in `ams_driver.py`); the GUI shows "(stable)" only after a streak of 3.
-- Recommended: ask VIGO support whether `detector_temperature` is valid on firmware v1.1.0 for the AMIS8140-01; send them the firmware version, UUID and the cluster table above. Cross-check the actual detector temperature mechanically if possible.
+`temperature_ok` flips randomly with the controller off and stayed **0 for all 600 frames** while C was locked at 263.32 K — it is not usable as a stability signal.
+
+**Port open resets the board's runtime configuration.** Verified 3×: setpoint 263 K + `configuration_changed=1` before close → after reopen setpoint reads 0, `configuration_changed=0`, `messages_received_counter` restarts. Independent of HUPCL (tested both ways), so it is triggered on open (most likely the DTR/RTS assertion the Linux kernel does on open; the vendor library deasserts them only afterwards). Commands sent within ~0.5 s after open are silently dropped.
+
+Handling in the app (`ams_driver.py`):
+- `PortOpenSettleTime` (1 s) after opening before any command; the setpoint is then read back synchronously.
+- The setpoint is re-applied on every connect when the Conn-tab temperature is non-zero (a setpoint set only via the detector tool is lost on reconnect).
+- Readings within ±`SetpointTrackingWindowK` (2 K) of the known setpoint are taken as the detector temperature (`trackedTemperatureK`); "stable" = 5 consecutive tracked readings within ±0.5 K, none older than 15 s (`isSetpointLocked()`). This drives the GUI "(stable)" label and "wait for stabilization" (bench: locked 31.8 s after connect). **Heuristic:** it breaks if the setpoint is within ~2 K of source A (~250.6 K) or B (~268 K); with the controller off only the raw value is shown.
+- Ask VIGO: which source is the detector temperature, what A and B are, why one field carries all three, and when `temperature_ok` asserts; whether the reset on port open is intended (DTR/RTS wiring of AMS-DIG-USB).
 
 ## 5. Agreed integration design
 
@@ -177,6 +182,7 @@ class AMSSerialDriver(DAQDriver):
 | `daq_base.py` | **modified**: `ProvidesReferenceChannel`, `SupportsTriggerMode` flags |
 | `settings_manager.py` | **modified**: reference + AMS defaults |
 | `tools/ams_bench.py` | **new**: bench validation script (§7) |
+| `tools/ams_temp_probe.py` | **new**: raw status / temperature capture before and after a setpoint change (§4.1) |
 | `requirements.txt` | **modified**: `ams-dig-proc>=0.0.9` |
 | `AMS_INTEGRATION.md` | **new**: this document |
 | `app_settings.txt` | runtime state, intentionally not committed |
@@ -230,7 +236,7 @@ Remaining/optional work after testing:
 ## 10. Open questions
 
 - Time-base alignment: implemented (§5.2); confirm during the first dual-DAQ measurement.
-- Detector temperature: the app sets the setpoint only when the field is non-zero (runtime only, no NVM write) — confirm the desired operating value (the bench unit stabilizes at 250.61 K).
+- Detector temperature: the app sets the setpoint only when the field is non-zero (runtime only, no NVM write), and must do so on every connect because opening the port resets it — confirm the desired operating value (263 K verified on the bench), and whether it should be saved to NVM instead.
 - Should higher effective rates (ratio ≤ 256) be exposed as "experimental" for short bursts? Bench says not reliable at 1 Mbit/s.
 - UART baud raise via `MessageConfigInterfaces.uartBaud` is possible but untested — only if higher rates are needed later.
 - Trigger mode: unavailable for AMS (single channel, external trigger only); dual-DAQ mode also disables the existing MFLI trigger path. Revisit if a shared trigger source is added.

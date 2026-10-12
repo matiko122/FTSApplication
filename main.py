@@ -1694,11 +1694,17 @@ class FTSApp:
             if (driver is not None and isinstance(driver, AMSSerialDriver) and
                     driver.isConnected and not driver.measurementInProgress):
                 driver.refreshStatus()
-                if driver.detectorTemperatureK is not None:
-                    temperatureText = f"Detector: {driver.detectorTemperatureK:.2f} K"
-                    if driver.temperatureOkStreak >= 3:
-                        temperatureText = temperatureText + " (stable)"
+                if driver.trackingSetpoint:
+                    if driver.isTrackedTemperatureFresh():
+                        temperatureText = f"Detector: {driver.trackedTemperatureK:.2f} K"
+                        if driver.isSetpointLocked():
+                            temperatureText = temperatureText + " (stable)"
+                    else:
+                        temperatureText = f"Detector: not near {driver.trackingSetpoint} K"
                     self.amsTemperatureValueLabel.configure(text=temperatureText)
+                elif driver.detectorTemperatureK is not None:
+                    self.amsTemperatureValueLabel.configure(
+                        text=f"Detector: {driver.detectorTemperatureK:.2f} K (raw, controller off)")
         except Exception:
             pass
 

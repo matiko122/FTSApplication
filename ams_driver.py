@@ -62,6 +62,18 @@ class AMSSerialDriver(DAQDriver):
     ProvidesReferenceChannel = False
     SupportsTriggerMode = False
 
+    # On firmware v1.1.0 the status field detector_temperature carries three
+    # different readings in turn; only one of them follows the setpoint (bench
+    # 2026-10-12: ~250.6 K and ~268 K stay put, the third locks to the
+    # setpoint). The board's temperature_ok flag never asserted while locked.
+    # The window must stay narrower than the gap to the other two readings.
+    SetpointTrackingWindowK = 2.0
+    SetpointLockToleranceK = 0.5
+    SetpointLockSamplesRequired = 5
+    SetpointTrackingStaleAfter = 15.0   # [s], readings rotate every ~3 s
+
+    PortOpenSettleTime = 1.0            # [s]
+
     def __init__(self):
         super().__init__()
 
@@ -75,9 +87,12 @@ class AMSSerialDriver(DAQDriver):
         self.monitoringModeActive = False
         self.detectorTemperatureK = None
         self.detectorTemperatureOk = None
-        self.temperatureOkStreak = 0
         self.detectorTemperatureSetpoint = None
         self.setpointReadPending = False
+        self.trackingSetpoint = None
+        self.trackedTemperatureK = None
+        self.trackedTemperatureTime = None
+        self.trackedLockStreak = 0
         self.dataOverflowCounter = 0
         self.messagesReceivedCounter = 0
 
@@ -121,6 +136,10 @@ class AMSSerialDriver(DAQDriver):
         logging.info("AMS driver: connected")
         self.isConnected = True
 
+        # opening the port resets the board's runtime configuration (setpoint
+        # back to the NVM value) and commands sent in the first ~0.5 s are lost
+        time.sleep(self.PortOpenSettleTime)
+
         # make sure the board does not stream stale data from an earlier session
         try:
             self.module.workmode_stop()
@@ -128,6 +147,10 @@ class AMSSerialDriver(DAQDriver):
             self.refreshStatus()
         except Exception as e:
             logging.info(f"AMS driver: initial cleanup failed: {e}")
+
+        # the setpoint is needed to pick the controlled reading out of the
+        # status messages
+        self.readDetectorTemperatureSetpoint()
 
         return True
 
@@ -139,6 +162,7 @@ class AMSSerialDriver(DAQDriver):
                          f"{self.configuredDetectorTemperature} K")
             try:
                 self.module.set_detector_temperature(int(self.configuredDetectorTemperature))
+                self._setKnownSetpoint(int(self.configuredDetectorTemperature))
             except Exception as e:
                 logging.info(f"AMS driver: setting detector temperature failed: {e}")
 
@@ -155,10 +179,8 @@ class AMSSerialDriver(DAQDriver):
         deadline = time.monotonic() + self.temperatureWaitTimeout
         self.module.flush_input()
 
-        # a single temperature_ok flag is not trustworthy (it can flip while the
-        # reported value is still moving), require a run of consecutive flags
-        consecutiveOkRequired = 5
-
+        # the board's temperature_ok flag is not usable on firmware v1.1.0, so
+        # stability is judged from the reading that follows the setpoint
         while time.monotonic() < deadline:
             msg = self.module.read_one_message(
                 msgClasses=[MessageStatus, MessageConfigDetectorTemperature], timeout=0.5)
@@ -167,10 +189,10 @@ class AMSSerialDriver(DAQDriver):
 
             self._handleNonDataMessage(msg)
 
-            if statusCallback is not None and self.detectorTemperatureK is not None:
-                statusCallback(f"Detector temperature: {self.detectorTemperatureK:.2f} K")
+            if statusCallback is not None and self.trackedTemperatureK is not None:
+                statusCallback(f"Detector temperature: {self.trackedTemperatureK:.2f} K")
 
-            if self.temperatureOkStreak >= consecutiveOkRequired:
+            if self.isSetpointLocked():
                 logging.info("AMS driver: detector temperature stabilized")
                 return True
 
@@ -206,20 +228,47 @@ class AMSSerialDriver(DAQDriver):
             self._updateCachedStatus(message)
         elif MessageConfigDetectorTemperature is not None and \
                 isinstance(message, MessageConfigDetectorTemperature):
-            self.detectorTemperatureSetpoint = int(message.temperature)
+            self._setKnownSetpoint(int(message.temperature))
             self.setpointReadPending = False
+
+    def _setKnownSetpoint(self, setpointK):
+        if setpointK != self.trackingSetpoint:
+            self.trackedTemperatureK = None
+            self.trackedTemperatureTime = None
+            self.trackedLockStreak = 0
+        self.trackingSetpoint = setpointK
+        self.detectorTemperatureSetpoint = setpointK
+
+    def _updateTrackedTemperature(self, temperatureK):
+        setpoint = self.trackingSetpoint
+        if not setpoint or abs(temperatureK - setpoint) > self.SetpointTrackingWindowK:
+            return
+
+        now = time.monotonic()
+        if self.trackedTemperatureTime is None or \
+                now - self.trackedTemperatureTime > self.SetpointTrackingStaleAfter:
+            self.trackedLockStreak = 0
+
+        if abs(temperatureK - setpoint) <= self.SetpointLockToleranceK:
+            self.trackedLockStreak += 1
+        else:
+            self.trackedLockStreak = 0
+
+        self.trackedTemperatureK = temperatureK
+        self.trackedTemperatureTime = now
+
+    def isTrackedTemperatureFresh(self):
+        return self.trackedTemperatureTime is not None and \
+            time.monotonic() - self.trackedTemperatureTime <= self.SetpointTrackingStaleAfter
+
+    def isSetpointLocked(self):
+        return self.isTrackedTemperatureFresh() and \
+            self.trackedLockStreak >= self.SetpointLockSamplesRequired
 
     def _updateCachedStatus(self, statusMessage):
         self.detectorTemperatureK = statusMessage.detector_temperature / 1000.0
         self.detectorTemperatureOk = bool(statusMessage.temperature_ok)
-
-        # the temperature_ok flag can note the temperature as settled while the
-        # reported value is still moving; require a run of consecutive "ok"
-        # status messages before treating the detector as stable
-        if self.detectorTemperatureOk:
-            self.temperatureOkStreak += 1
-        else:
-            self.temperatureOkStreak = 0
+        self._updateTrackedTemperature(self.detectorTemperatureK)
 
         self.dataOverflowCounter = int(statusMessage.data_overflow_counter)
         self.messagesReceivedCounter = int(statusMessage.messages_received_counter)
@@ -247,6 +296,7 @@ class AMSSerialDriver(DAQDriver):
             return False
         try:
             self.module.set_detector_temperature(int(temperatureInK))
+            self._setKnownSetpoint(int(temperatureInK))
             logging.info(f"AMS driver: detector temperature set to {temperatureInK} K")
             return True
         except Exception as e:

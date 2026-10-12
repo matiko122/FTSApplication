@@ -90,13 +90,17 @@ class DetectorTool:
                                           font=ctk.CTkFont(size=12))
         self.setpointLabel.grid(row=3, column=0, columnspan=3, sticky="W", padx=8, pady=(0, 2))
 
-        self.reportedTemperatureLabel = ctk.CTkLabel(master=self.temperatureFrame, text="Reported: --",
-                                                     font=ctk.CTkFont(size=12))
-        self.reportedTemperatureLabel.grid(row=4, column=0, columnspan=3, sticky="W", padx=8, pady=(0, 2))
+        self.trackedTemperatureLabel = ctk.CTkLabel(master=self.temperatureFrame, text="At setpoint: --",
+                                                    font=ctk.CTkFont(size=12, weight="bold"))
+        self.trackedTemperatureLabel.grid(row=4, column=0, columnspan=3, sticky="W", padx=8, pady=(0, 2))
 
-        self.temperatureOkLabel = ctk.CTkLabel(master=self.temperatureFrame, text="Temperature ok: --",
-                                               font=ctk.CTkFont(size=12, weight="bold"))
-        self.temperatureOkLabel.grid(row=5, column=0, columnspan=3, sticky="W", padx=8, pady=(0, 8))
+        self.reportedTemperatureLabel = ctk.CTkLabel(master=self.temperatureFrame, text="Raw status field: --",
+                                                     font=ctk.CTkFont(size=12))
+        self.reportedTemperatureLabel.grid(row=5, column=0, columnspan=3, sticky="W", padx=8, pady=(0, 2))
+
+        self.temperatureOkLabel = ctk.CTkLabel(master=self.temperatureFrame, text="Board temp_ok flag: --",
+                                               font=ctk.CTkFont(size=12))
+        self.temperatureOkLabel.grid(row=6, column=0, columnspan=3, sticky="W", padx=8, pady=(0, 8))
 
         # --- output level monitoring ------------------------------------
         self.monitorFrame = ctk.CTkFrame(master=self.controlsFrame, fg_color="gray18", corner_radius=8)
@@ -335,18 +339,27 @@ class DetectorTool:
         if self.closed or driver is None:
             return
 
+        setpoint = getattr(driver, "trackingSetpoint", None)
+        if not setpoint:
+            self.trackedTemperatureLabel.configure(text="At setpoint: controller off", text_color="gray70")
+        elif not driver.isTrackedTemperatureFresh():
+            self.trackedTemperatureLabel.configure(
+                text=f"At setpoint: no reading within ±{driver.SetpointTrackingWindowK:g} K of {setpoint} K",
+                text_color="orange")
+        elif driver.isSetpointLocked():
+            self.trackedTemperatureLabel.configure(
+                text=f"At setpoint: {driver.trackedTemperatureK:.2f} K (stable)", text_color="lightgreen")
+        else:
+            self.trackedTemperatureLabel.configure(
+                text=f"At setpoint: {driver.trackedTemperatureK:.2f} K (settling)", text_color="orange")
+
         if getattr(driver, "detectorTemperatureK", None) is not None:
             self.reportedTemperatureLabel.configure(
-                text=f"Reported: {driver.detectorTemperatureK:.2f} K")
+                text=f"Raw status field: {driver.detectorTemperatureK:.2f} K (rotates between sources)")
 
         if getattr(driver, "detectorTemperatureOk", None) is not None:
-            streak = getattr(driver, "temperatureOkStreak", 0)
-            if driver.detectorTemperatureOk:
-                self.temperatureOkLabel.configure(
-                    text=f"Temperature ok: YES (streak {streak})", text_color="lightgreen")
-            else:
-                self.temperatureOkLabel.configure(
-                    text=f"Temperature ok: NO (streak {streak})", text_color="red")
+            self.temperatureOkLabel.configure(
+                text=f"Board temp_ok flag: {'YES' if driver.detectorTemperatureOk else 'NO'} (unreliable)")
 
     def _pollIdleStatus(self):
         # refresh the temperature readouts while neither the level monitor nor
