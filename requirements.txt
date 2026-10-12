@@ -35,3 +35,8 @@ h5py==3.16.0
 # Hardware interfaces
 pyserial==3.5           # imported as "serial"
 zhinst==26.7.2          # imports zhinst.core + zhinst.utils (pulls zhinst-core 26.7.2.5, zhinst-utils 0.7.2)
+
+# AMIS8140-01 detector via AMS-DIG-PROC board (VIGO Photonics)
+#   import names: ams_module, ams_messages. PyPI 0.0.9 has the full acquisition
+#   API; git main (0.1.0) additionally has firmware/UUID/bootloader helpers.
+ams-dig-proc>=0.0.9
