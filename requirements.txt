@@ -1,0 +1,37 @@
+# FTS Application — Python dependencies
+#
+# Requires Python >= 3.12 (pinned numpy/scipy do not support older versions).
+# Verified against Python 3.14 on Linux.
+#
+# System prerequisites (not installable via pip):
+#   - Tkinter:                  Arch/CachyOS: sudo pacman -S tk
+#                               Debian/Ubuntu: sudo apt install python3-tk
+#   - Digilent ADP2230 (opt.):  WaveForms SDK / Adept runtime providing libdwf.so
+#   - Zurich Instruments MFLI:  LabOne data server running & reachable (default port 8004)
+#   The app also runs with DAQ type "Simulated" and no hardware at all.
+#
+# Install:  python3 -m pip install -r requirements.txt
+# Run:      python3 main.py
+
+# GUI
+customtkinter==6.0.0
+matplotlib==3.11.2
+
+# Scientific computing / signal processing
+numpy==2.5.4
+scipy==1.18.1
+si-prefix==1.3.3        # imported as "si_prefix"
+norton-beer==1.0.1      # imported as "norton_beer"
+
+# Dependency workaround (do not upgrade):
+#   norton_beer imports the deprecated pkg_resources module at load time.
+#   setuptools >= 82.0.0 no longer ships pkg_resources, so 81.0.0 is the last
+#   compatible release. Keep this pin until norton_beer is fixed upstream.
+setuptools==81.0.0
+
+# Data export
+h5py==3.16.0
+
+# Hardware interfaces
+pyserial==3.5           # imported as "serial"
+zhinst==26.7.2          # imports zhinst.core + zhinst.utils (pulls zhinst-core 26.7.2.5, zhinst-utils 0.7.2)
