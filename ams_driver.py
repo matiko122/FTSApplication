@@ -76,6 +76,8 @@ class AMSSerialDriver(DAQDriver):
         self.detectorTemperatureK = None
         self.detectorTemperatureOk = None
         self.temperatureOkStreak = 0
+        self.detectorTemperatureSetpoint = None
+        self.setpointReadPending = False
         self.dataOverflowCounter = 0
         self.messagesReceivedCounter = 0
 
@@ -158,11 +160,12 @@ class AMSSerialDriver(DAQDriver):
         consecutiveOkRequired = 5
 
         while time.monotonic() < deadline:
-            msg = self.module.read_one_message(msgClasses=MessageStatus, timeout=0.5)
+            msg = self.module.read_one_message(
+                msgClasses=[MessageStatus, MessageConfigDetectorTemperature], timeout=0.5)
             if msg is None:
                 continue
 
-            self._updateCachedStatus(msg)
+            self._handleNonDataMessage(msg)
 
             if statusCallback is not None and self.detectorTemperatureK is not None:
                 statusCallback(f"Detector temperature: {self.detectorTemperatureK:.2f} K")
@@ -182,14 +185,29 @@ class AMSSerialDriver(DAQDriver):
 
         lastMessage = None
         while True:
-            msg = self.module.read_one_message(msgClasses=MessageStatus,
-                                               block=False, timeout=0.1)
+            msg = self.module.read_one_message(
+                msgClasses=[MessageStatus, MessageConfigDetectorTemperature],
+                block=False, timeout=0.1)
             if msg is None:
                 break
             lastMessage = msg
-            self._updateCachedStatus(msg)
+            self._handleNonDataMessage(msg)
 
         return lastMessage
+
+    def _handleNonDataMessage(self, message):
+        """Central dispatch for non-data messages (status / config responses).
+
+        Every reader in this driver passes such messages here, so no reader
+        discards information another one is waiting for (e.g. the temperature
+        setpoint response or the periodic status required for the live
+        temperature display)."""
+        if MessageStatus is not None and isinstance(message, MessageStatus):
+            self._updateCachedStatus(message)
+        elif MessageConfigDetectorTemperature is not None and \
+                isinstance(message, MessageConfigDetectorTemperature):
+            self.detectorTemperatureSetpoint = int(message.temperature)
+            self.setpointReadPending = False
 
     def _updateCachedStatus(self, statusMessage):
         self.detectorTemperatureK = statusMessage.detector_temperature / 1000.0
@@ -235,28 +253,53 @@ class AMSSerialDriver(DAQDriver):
             logging.info(f"AMS driver: setting detector temperature failed: {e}")
             return False
 
+    def requestDetectorTemperatureSetpointRead(self):
+        """Requests the detector temperature setpoint from the board.
+
+        The response is picked up by whichever message reader is currently
+        active (status poll, level monitor or measurement loop) and stored in
+        self.detectorTemperatureSetpoint; setpointReadPending is cleared."""
+        if self.module is None or MessageIds is None:
+            return False
+
+        try:
+            self.detectorTemperatureSetpoint = None
+            self.setpointReadPending = True
+            self.module.read_config(MessageIds.MESSAGE_CONFIGURE_DETECTOR_TEMPERATURE)
+            return True
+        except Exception as e:
+            self.setpointReadPending = False
+            logging.info(f"AMS driver: setpoint read request failed: {e}")
+            return False
+
     def readDetectorTemperatureSetpoint(self, timeout=2.0):
         """Reads the detector temperature setpoint currently stored on the
-        board [K] (0 = controller disabled). Returns None if not readable."""
+        board [K] (0 = controller disabled). Returns None if not readable.
+
+        Safe to use while the level monitor or a measurement is running: the
+        response is consumed and stored by the active reader loop."""
         if self.module is None or MessageIds is None:
             return None
 
-        try:
-            self.module.flush_input()
-            self.module.read_config(MessageIds.MESSAGE_CONFIGURE_DETECTOR_TEMPERATURE)
-        except Exception as e:
-            logging.info(f"AMS driver: setpoint read failed: {e}")
+        if not self.requestDetectorTemperatureSetpointRead():
             return None
 
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            msg = self.module.read_one_message(timeout=0.2)
-            if msg is None:
-                continue
-            if isinstance(msg, MessageConfigDetectorTemperature):
-                return int(msg.temperature)
+        while time.monotonic() < deadline and self.setpointReadPending:
+            if not self.monitoringModeActive and not self.measurementInProgress:
+                # no other reader is active: pick the response up here
+                msg = self.module.read_one_message(
+                    msgClasses=[MessageStatus, MessageConfigDetectorTemperature], timeout=0.2)
+                if msg is not None:
+                    self._handleNonDataMessage(msg)
+            else:
+                time.sleep(0.05)
 
-        return None
+        if self.setpointReadPending:
+            logging.info("AMS driver: setpoint read timed out")
+            return None
+
+        return self.detectorTemperatureSetpoint
 
     def beginLevelMonitoring(self, samplingFreqIndex=0):
         """Starts a continuous freerunning capture for the detector level tool.
@@ -298,8 +341,15 @@ class AMSSerialDriver(DAQDriver):
         if self.module is None or not self.monitoringModeActive:
             return None
 
-        msg = self.module.read_one_message(msgClasses=MessageOutputData, timeout=timeout)
+        msg = self.module.read_one_message(
+            msgClasses=[MessageOutputData, MessageStatus, MessageConfigDetectorTemperature],
+            timeout=timeout)
         if msg is None:
+            return None
+
+        if not isinstance(msg, MessageOutputData):
+            # status / setpoint response: keep the caches warm, no data to report
+            self._handleNonDataMessage(msg)
             return None
 
         data = np.asarray(msg.voltages, dtype=np.float64)
@@ -398,7 +448,8 @@ class AMSSerialDriver(DAQDriver):
 
             while receivedSamples < expectedSamples and time.monotonic() < deadline:
                 msg = self.module.read_one_message(
-                    msgClasses=[MessageOutputData, MessageStatus], timeout=0.2)
+                    msgClasses=[MessageOutputData, MessageStatus, MessageConfigDetectorTemperature],
+                    timeout=0.2)
 
                 if msg is None:
                     # stop early once the board has finished sampling and all
@@ -417,13 +468,14 @@ class AMSSerialDriver(DAQDriver):
                     chunks.append(np.asarray(msg.voltages, dtype=np.float64))
                     receivedSamples += len(chunks[-1])
                 else:
-                    self._updateCachedStatus(msg)
-                    overflowSeen = max(overflowSeen, msg.data_overflow_counter)
-                    if int(msg.sampling_state) == 0:
-                        if boardIdleSince is None:
-                            boardIdleSince = time.monotonic()
-                    else:
-                        boardIdleSince = None
+                    self._handleNonDataMessage(msg)
+                    if isinstance(msg, MessageStatus):
+                        overflowSeen = max(overflowSeen, msg.data_overflow_counter)
+                        if int(msg.sampling_state) == 0:
+                            if boardIdleSince is None:
+                                boardIdleSince = time.monotonic()
+                        else:
+                            boardIdleSince = None
 
             overflowDelta = overflowSeen - overflowBefore
 
