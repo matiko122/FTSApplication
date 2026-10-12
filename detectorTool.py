@@ -92,7 +92,11 @@ class DetectorTool:
 
         self.reportedTemperatureLabel = ctk.CTkLabel(master=self.temperatureFrame, text="Reported: --",
                                                      font=ctk.CTkFont(size=12))
-        self.reportedTemperatureLabel.grid(row=4, column=0, columnspan=3, sticky="W", padx=8, pady=(0, 8))
+        self.reportedTemperatureLabel.grid(row=4, column=0, columnspan=3, sticky="W", padx=8, pady=(0, 2))
+
+        self.temperatureOkLabel = ctk.CTkLabel(master=self.temperatureFrame, text="Temperature ok: --",
+                                               font=ctk.CTkFont(size=12, weight="bold"))
+        self.temperatureOkLabel.grid(row=5, column=0, columnspan=3, sticky="W", padx=8, pady=(0, 8))
 
         # --- output level monitoring ------------------------------------
         self.monitorFrame = ctk.CTkFrame(master=self.controlsFrame, fg_color="gray18", corner_radius=8)
@@ -164,6 +168,9 @@ class DetectorTool:
         # show the currently configured setpoint if the detector is connected
         t = Thread(target=self._readSetpointThread, daemon=True)
         t.start()
+
+        # keep the temperature readouts fresh even when monitoring is off
+        self.window.after(1000, self._pollIdleStatus)
 
     # ------------------------------------------------------------------
     # helpers
@@ -317,15 +324,46 @@ class DetectorTool:
         self.peakToPeakLabel.configure(text=f"Peak-peak: {peakToPeak:.4f} V")
         self.noiseLabel.configure(text=f"Noise (std): {noise:.5f} V")
 
-        driver = self.grabDetectorDriver()
-        if driver is not None and getattr(driver, "detectorTemperatureK", None) is not None:
-            self.reportedTemperatureLabel.configure(
-                text=f"Reported: {driver.detectorTemperatureK:.2f} K")
+        self._updateTemperatureLabels(self.grabDetectorDriver())
 
         now = time.monotonic()
         if now - self.lastPlotRefresh > 0.25:
             self.lastPlotRefresh = now
             self._redrawPlot()
+
+    def _updateTemperatureLabels(self, driver):
+        if self.closed or driver is None:
+            return
+
+        if getattr(driver, "detectorTemperatureK", None) is not None:
+            self.reportedTemperatureLabel.configure(
+                text=f"Reported: {driver.detectorTemperatureK:.2f} K")
+
+        if getattr(driver, "detectorTemperatureOk", None) is not None:
+            streak = getattr(driver, "temperatureOkStreak", 0)
+            if driver.detectorTemperatureOk:
+                self.temperatureOkLabel.configure(
+                    text=f"Temperature ok: YES (streak {streak})", text_color="lightgreen")
+            else:
+                self.temperatureOkLabel.configure(
+                    text=f"Temperature ok: NO (streak {streak})", text_color="red")
+
+    def _pollIdleStatus(self):
+        # refresh the temperature readouts while neither the level monitor nor
+        # a measurement is running (those loops update the labels themselves)
+        if not self.closed:
+            try:
+                driver = self._getDriver()
+                if driver is not None and not getattr(driver, "measurementInProgress", False):
+                    driver.refreshStatus()
+                    self._updateTemperatureLabels(driver)
+            except Exception:
+                pass
+
+        try:
+            self.window.after(1000, self._pollIdleStatus)
+        except Exception:
+            pass
 
     def _redrawPlot(self):
         if self.closed or len(self.levelHistory) == 0:
@@ -348,6 +386,7 @@ class DetectorTool:
         self.startButton.configure(state="normal")
         self.stopButton.configure(state="disabled")
         self.statusLabel.configure(text="Monitoring stopped")
+        self._updateTemperatureLabels(self.grabDetectorDriver())
         self._redrawPlot()
 
     def _postToWindow(self, callback):
