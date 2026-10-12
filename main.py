@@ -227,10 +227,9 @@ class FTSApp:
         self.frameButtonsBottom.columnconfigure(0, weight=1)
         self.frameButtonsBottom.columnconfigure(1, weight=1)
 
-        # self.frameButtonsBottom.rowconfigure(0, weight=1)
-        # self.frameButtonsBottom.rowconfigure(1, weight=1)
-        # self.frameButtonsBottom.rowconfigure(2, weight=1)
-        # self.frameButtonsBottom.rowconfigure(3, weight=1)
+        # let the settings tabs fill the available vertical space so they
+        # grow with the window instead of forcing scrolling
+        self.frameButtonsBottom.rowconfigure(4, weight=1)
         # self.frameButtonsBottom.rowconfigure(4, weight=1)
 
         self.configLabel = ctk.CTkLabel(master=self.frameButtonsBottom,
@@ -252,6 +251,9 @@ class FTSApp:
         # ==============================================================================================================
         self.settingsTabs.tab("Scan").columnconfigure(0, weight=1)
         self.settingsTabs.tab("Scan").columnconfigure(1, weight=1)
+
+        # keep the controls anchored at the top when the panel is stretched
+        self.settingsTabs.tab("Scan").rowconfigure(20, weight=1)
 
         self.samplingFreqLabelHeader = ctk.CTkLabel(master=self.settingsTabs.tab("Scan"),
                                                     text="Sampling\nfreqency",
@@ -346,11 +348,8 @@ class FTSApp:
         self.settingsTabs.tab("Proc").columnconfigure(0, weight=1)
         self.settingsTabs.tab("Proc").columnconfigure(1, weight=1)
 
-        self.settingsTabs.tab("Proc").rowconfigure(0, weight=1)
-        self.settingsTabs.tab("Proc").rowconfigure(1, weight=1)
-        self.settingsTabs.tab("Proc").rowconfigure(2, weight=1)
-        self.settingsTabs.tab("Proc").rowconfigure(3, weight=1)
-        self.settingsTabs.tab("Proc").rowconfigure(4, weight=1)
+        # keep the controls anchored at the top when the panel is stretched
+        self.settingsTabs.tab("Proc").rowconfigure(20, weight=1)
 
         self.apodizationComboLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Proc"),
                                                     text="Apodization\nwindow",
@@ -370,10 +369,8 @@ class FTSApp:
         self.settingsTabs.tab("Trg").columnconfigure(0, weight=1)
         self.settingsTabs.tab("Trg").columnconfigure(1, weight=1)
 
-        self.settingsTabs.tab("Trg").rowconfigure(0, weight=1)
-        self.settingsTabs.tab("Trg").rowconfigure(1, weight=1)
-        self.settingsTabs.tab("Trg").rowconfigure(2, weight=1)
-        self.settingsTabs.tab("Trg").rowconfigure(3, weight=1)
+        # keep the controls anchored at the top when the panel is stretched
+        self.settingsTabs.tab("Trg").rowconfigure(20, weight=1)
 
         self.triggerEnableSwitch = ctk.CTkSwitch(master=self.settingsTabs.tab("Trg"),
                                                     text="Triggered acquisition mode",
@@ -476,7 +473,7 @@ class FTSApp:
         self.hardwareStatusLabelHeader.grid(row=3, column=0, sticky="E", padx=5, pady=5)
 
         self.hardwareStatusLabel = ctk.CTkLabel(master=self.connFrame,
-                                                text="NOT\nREADY",
+                                                text="NOT READY",
                                                 text_color="red",
                                                 font=ctk.CTkFont(size=14, weight="bold"))
         self.hardwareStatusLabel.grid(row=3, column=1, sticky="W", padx=5, pady=5)
@@ -487,7 +484,7 @@ class FTSApp:
         self.mfliStatusLabelHeader.grid(row=4, column=0, sticky="E", padx=5, pady=5)
 
         self.mfliStatusLabel = ctk.CTkLabel(master=self.connFrame,
-                                            text="NOT\nREADY",
+                                            text="NOT READY",
                                             text_color="red",
                                             font=ctk.CTkFont(size=14, weight="bold"))
         self.mfliStatusLabel.grid(row=4, column=1, sticky="W", padx=5, pady=5)
@@ -509,7 +506,7 @@ class FTSApp:
         self.zaberStatusLabelHeader.grid(row=6, column=0, sticky="E", padx=5, pady=5)
 
         self.zaberStatusLabel = ctk.CTkLabel(master=self.connFrame,
-                                             text="NOT\nREADY",
+                                             text="NOT READY",
                                              text_color="red",
                                              font=ctk.CTkFont(size=14, weight="bold"))
         self.zaberStatusLabel.grid(row=6, column=1, sticky="W", padx=5, pady=5)
@@ -605,7 +602,7 @@ class FTSApp:
         self.amsTemperatureBox.insert(0, self.appSettings.get("amsDetectorTemperature", "0"))
 
         self.amsWaitTemperatureSwitch = ctk.CTkSwitch(master=self.connFrame,
-                                                      text="Wait until stabilized",
+                                                      text="Wait until stable",
                                                       font=ctk.CTkFont(size=12),
                                                       onvalue="True", offvalue="False")
 
@@ -628,7 +625,7 @@ class FTSApp:
         self.buttonHardware = ctk.CTkButton(master=self.connFrame,
                                             text="Connect\nall",
                                             width=120,
-                                            height=80,
+                                            height=60,
                                             corner_radius=10,
                                             command=self.onCmdConnectHardware)
         self.buttonHardware.grid(row=13, column=0, sticky="N", padx=5, pady=5)
@@ -636,7 +633,7 @@ class FTSApp:
         self.buttonHomeMirror = ctk.CTkButton(master=self.connFrame,
                                               text="Home\nmirror",
                                               width=120,
-                                              height=80,
+                                              height=60,
                                               corner_radius=10,
                                               command=self.onCmdUnusedButton)
         self.buttonHomeMirror.grid(row=13, column=1, sticky="N", padx=5, pady=5)
@@ -646,6 +643,9 @@ class FTSApp:
         self.settingsTabs.tab("Sv").columnconfigure(0, weight=1)
         self.settingsTabs.tab("Sv").columnconfigure(1, weight=1)
         self.settingsTabs.tab("Sv").columnconfigure(2, weight=1)
+
+        # let the comments box grow with the available space
+        self.settingsTabs.tab("Sv").rowconfigure(4, weight=1)
 
         self.buttonSaveNormal = ctk.CTkButton(master=self.settingsTabs.tab("Sv"),
                                             text="Save\nresults",
@@ -701,15 +701,15 @@ class FTSApp:
                                               bg_color='gray18',
                                               corner_radius=10)
 
-        self.commentsTextBox.grid(row=4, column=0, columnspan=3, padx=5, pady=5, sticky='W')
+        self.commentsTextBox.grid(row=4, column=0, columnspan=3, padx=5, pady=5, sticky='NSEW')
 
         # configure settings 'PLOTS' tab
         # ==============================================================================================================
         self.settingsTabs.tab("Plot").columnconfigure(0, weight=1)
         self.settingsTabs.tab("Plot").columnconfigure(1, weight=1)
 
-        self.settingsTabs.tab("Plot").columnconfigure(0, weight=1)
-        self.settingsTabs.tab("Plot").columnconfigure(1, weight=1)
+        # keep the controls anchored at the top when the panel is stretched
+        self.settingsTabs.tab("Plot").rowconfigure(20, weight=1)
 
         self.spectrumXMinLabel = ctk.CTkLabel(master=self.settingsTabs.tab("Plot"),
                                                     text="Spectrum plot\nX MIN [\u03BCm]",
@@ -896,7 +896,7 @@ class FTSApp:
                 self.hardwareStatusLabel.configure(text="READY", text_color="lightgreen")
                 logging.info(f"General status: ready")
             else:
-                self.hardwareStatusLabel.configure(text="NOT\nREADY", text_color="red")
+                self.hardwareStatusLabel.configure(text="NOT READY", text_color="red")
                 logging.info(f"General status: not ready")
         self.root.after(0, _)
 
@@ -909,7 +909,7 @@ class FTSApp:
                     self.appSettings["mfliDeviceID"] = self.mfliIDBox.get("0.0", "end").replace(' ', '').replace('\t', '').replace('\n', '').replace('\r', '')
                 logging.info(f"DAQ status: ready")
             else:
-                self.mfliStatusLabel.configure(text="NOT\nREADY", text_color="red")
+                self.mfliStatusLabel.configure(text="NOT READY", text_color="red")
                 logging.info(f"DAQ status: not ready")
             self._updateDaqControlStates()
             self._updateCaptureButtons()
@@ -923,7 +923,7 @@ class FTSApp:
                     self.referenceStatusLabel.configure(text="READY", text_color="lightgreen")
                     logging.info(f"Reference DAQ status: ready")
                 else:
-                    self.referenceStatusLabel.configure(text="NOT\nREADY", text_color="red")
+                    self.referenceStatusLabel.configure(text="NOT READY", text_color="red")
                     logging.info(f"Reference DAQ status: not ready")
             else:
                 self.referenceStatusLabel.configure(text="N/A", text_color="gray")
@@ -985,7 +985,7 @@ class FTSApp:
                 self.appSettings["delayLineCOMPort"] = self.zaberPortCombo.get()
                 logging.info(f"Delay line status: ready")
             else:
-                self.zaberStatusLabel.configure(text="NOT\nREADY", text_color="red")
+                self.zaberStatusLabel.configure(text="NOT READY", text_color="red")
                 logging.info(f"Delay line status: not ready")
             self._updateCaptureButtons()
         self.root.after(0, _)
@@ -1594,8 +1594,8 @@ class FTSApp:
 
             self.amsTemperatureLabel.grid(row=10, column=0, sticky="W", padx=5, pady=5)
             self.amsTemperatureBox.grid(row=10, column=1, sticky="E", padx=5, pady=5)
-            self.amsWaitTemperatureSwitch.grid(row=11, column=0, columnspan=2, sticky="W", padx=5, pady=2)
-            self.amsTemperatureValueLabel.grid(row=12, column=0, columnspan=2, sticky="W", padx=5, pady=2)
+            self.amsWaitTemperatureSwitch.grid(row=11, column=0, sticky="W", padx=5, pady=2)
+            self.amsTemperatureValueLabel.grid(row=11, column=1, sticky="W", padx=5, pady=2)
 
         # reference DAQ specific controls (second line) — only needed when the
         # main DAQ does not already provide them

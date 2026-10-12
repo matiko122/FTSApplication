@@ -12,7 +12,6 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import sys
 from tkinter import messagebox
 import settings_manager as SM
-from main import FTSApp
 
 class AdjustmentTool:
 
